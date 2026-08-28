@@ -1,0 +1,5 @@
+starters:
+  - id: borrowed-values
+    text: 你最近做的哪个决定，看似是“应该如此”，其实更像是在服从别人的尺度？
+    quick_replies: [职业选择, 亲密关系, 家庭期待, 我想自己说]
+

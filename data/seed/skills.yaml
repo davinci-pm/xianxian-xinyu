@@ -1,0 +1,57 @@
+skills:
+  - skill_key: reflective_question
+    name: 反思式提问
+    version: 1.0.0
+    source: internal://first-sage/reflective-question
+    license_name: Proprietary-Internal
+    risk_level: low
+    permissions: []
+    config: {max_questions: 1}
+    allowlisted: true
+    enabled: true
+  - skill_key: perspective_reframe
+    name: 视角重构
+    version: 1.0.0
+    source: internal://first-sage/perspective-reframe
+    license_name: Proprietary-Internal
+    risk_level: low
+    permissions: []
+    config: {preserve_user_agency: true}
+    allowlisted: true
+    enabled: true
+  - skill_key: source_citation
+    name: 资料引用
+    version: 1.0.0
+    source: internal://first-sage/source-citation
+    license_name: Proprietary-Internal
+    risk_level: low
+    permissions: [knowledge_read]
+    config: {max_citations: 2}
+    allowlisted: true
+    enabled: true
+  - skill_key: fengge_perspective_reviewed
+    name: 峰哥亡命天涯视角（上游原版）
+    version: 1.0.0+upstream.fdf8710
+    source: https://github.com/rottenpen/fengge-wangmingtianya-perspective/tree/fdf871015255ef8e568a7a86679fc4b183bce7ba
+    license_name: MIT
+    risk_level: medium
+    permissions: [codex_skill_read]
+    config:
+      pinned_commit: fdf871015255ef8e568a7a86679fc4b183bce7ba
+      public_figure: true
+      installed_skill_name: fengge-wangmingtianya-perspective
+      mode: upstream_original
+      source_files:
+        - SKILL.md
+    allowlisted: true
+    enabled: true
+  - skill_key: github_unreviewed_example
+    name: 未审核 GitHub Skill 占位
+    version: 0.0.0
+    source: https://github.com/example/unreviewed-skill
+    license_name: UNVERIFIED
+    risk_level: unknown
+    permissions: [unknown]
+    config: {}
+    allowlisted: false
+    enabled: false

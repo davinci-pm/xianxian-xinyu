@@ -1,0 +1,114 @@
+schema_version: 1
+audited_at: 2026-08-27
+policy:
+  execution: denied
+  readable_extensions: [.md]
+  rag_scope: all_markdown
+  license_required: true
+  source_pin_required: true
+skills:
+  - persona_slug: zhang-xuefeng
+    skill_key: upstream_zhangxuefeng
+    install_dir: zhangxuefeng-skill
+    repository: alchaincyf/zhangxuefeng-skill
+    pinned_commit: 3501b1e679cf595a6af800619af757aba46d7574
+    stars_snapshot: 10200
+    license: MIT
+  - persona_slug: selected-works-of-mao
+    skill_key: upstream_maoxuan
+    install_dir: maoxuan-skill
+    repository: leezythu/maoxuan-skill
+    pinned_commit: 4376a65020b1fd96af65052ccd30accaddedc3f1
+    stars_snapshot: 1074
+    license: MIT
+  - persona_slug: steve-jobs
+    skill_key: upstream_steve_jobs
+    install_dir: steve-jobs-skill
+    repository: alchaincyf/steve-jobs-skill
+    pinned_commit: 8ae40e10013d5218f85bc0e0241fd804f3b5c5e9
+    stars_snapshot: 936
+    license: MIT
+  - persona_slug: elon-musk
+    skill_key: upstream_elon_musk
+    install_dir: elon-musk-skill
+    repository: alchaincyf/elon-musk-skill
+    pinned_commit: b5dad76f9da33c433abd80feb794625b2309e867
+    stars_snapshot: 494
+    license: MIT
+  - persona_slug: charlie-munger
+    skill_key: upstream_munger
+    install_dir: munger-skill
+    repository: alchaincyf/munger-skill
+    pinned_commit: 12d582ce4a97bcfff1cac032ecef436406feb1c2
+    stars_snapshot: 350
+    license: MIT
+  - persona_slug: new-youth-method
+    skill_key: upstream_xinqingnian
+    install_dir: xinqingnian-maoxuan-skill
+    repository: SamadhiFire/xinqingnian-maoxuan-skill
+    pinned_commit: 4382484d8a4867f0bf9a6d089e04939618943dfb
+    stars_snapshot: 319
+    license: MIT
+  - persona_slug: andrej-karpathy
+    skill_key: upstream_karpathy
+    install_dir: karpathy-skill
+    repository: alchaincyf/karpathy-skill
+    pinned_commit: 0b10e859105b0f1cf116cc235b0fee0abdb929e8
+    stars_snapshot: 296
+    license: MIT
+  - persona_slug: richard-feynman
+    skill_key: upstream_feynman
+    install_dir: feynman-skill
+    repository: alchaincyf/feynman-skill
+    pinned_commit: 3ec26652e3b25c464a3188aeb2365445ce4f3d1d
+    stars_snapshot: 257
+    license: MIT
+  - persona_slug: naval-ravikant
+    skill_key: upstream_naval
+    install_dir: naval-skill
+    repository: alchaincyf/naval-skill
+    pinned_commit: 0de29b12a7c47088c9e1c0b144d6eb0ed1a04b49
+    stars_snapshot: 238
+    license: MIT
+  - persona_slug: zhang-yiming
+    skill_key: upstream_zhang_yiming
+    install_dir: zhang-yiming-skill
+    repository: alchaincyf/zhang-yiming-skill
+    pinned_commit: db80fcc0a8ea892ef294439a9a4805cf96419a03
+    stars_snapshot: 163
+    license: MIT
+  - persona_slug: nassim-taleb
+    skill_key: upstream_taleb
+    install_dir: taleb-skill
+    repository: alchaincyf/taleb-skill
+    pinned_commit: 69d58a003318df4c252bb3e8c0c2b1b2df0e994a
+    stars_snapshot: 117
+    license: MIT
+  - persona_slug: mrbeast
+    skill_key: upstream_mrbeast
+    install_dir: mrbeast-skill
+    repository: alchaincyf/mrbeast-skill
+    pinned_commit: f63f0c5d4a2040ebf3540ec336a67a8bff12fd94
+    stars_snapshot: 106
+    license: MIT
+  - persona_slug: mao-zedong
+    skill_key: upstream_mao
+    install_dir: mao-skill
+    repository: wwwaapplleecu-source/mao-skill
+    pinned_commit: b6b3963478289345c20078595fb2d6b66e547302
+    stars_snapshot: 103
+    license: MIT
+  - persona_slug: paul-graham
+    skill_key: upstream_paul_graham
+    install_dir: paul-graham-skill
+    repository: alchaincyf/paul-graham-skill
+    pinned_commit: e6ed220cd417e8bfc100dddd38a41a62fa692a71
+    stars_snapshot: 92
+    license: MIT
+  - persona_slug: ilya-sutskever
+    skill_key: upstream_ilya
+    install_dir: ilya-sutskever-skill
+    repository: alchaincyf/ilya-sutskever-skill
+    pinned_commit: 4829975a3091ffcb41de9ebc6b7bb2ce370ca079
+    stars_snapshot: 47
+    license: MIT

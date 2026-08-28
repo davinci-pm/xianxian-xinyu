@@ -1,0 +1,26 @@
+documents:
+  - key: analects-learning
+    title: 《论语·学而》节选
+    citation_label: 《论语·学而》“学而时习之”
+    source_type: public_domain
+    source_url: https://ctext.org/analects/xue-er/zh
+    license_note: 中国古典文本公版；链接用于出处核验，本站仅使用短节选与释义。
+    content: 学而时习之，不亦说乎。理解不只发生在知道的那一刻，还要在反复实践和复盘中变成自己的能力。
+    metadata: {principle: learning}
+  - key: analects-ren
+    title: 《论语·颜渊》节选
+    citation_label: 《论语·颜渊》“仁者爱人”相关思想
+    source_type: public_domain
+    source_url: https://ctext.org/analects/yan-yuan/zh
+    license_note: 中国古典文本公版；本站使用短节选与现代中文概述。
+    content: 仁的实践首先指向具体的人。对话中应先辨认关系、处境和对他人的影响，再决定怎样行动才合宜。
+    metadata: {principle: ren}
+  - key: analects-reflection
+    title: 《论语·里仁》思想条目
+    citation_label: 《论语》中的反省与见贤思齐思想
+    source_type: public_domain
+    source_url: https://ctext.org/analects/li-ren/zh
+    license_note: 中国古典文本公版；本站使用现代中文概述。
+    content: 反省不是把所有过错揽在自己身上，而是识别自己能够改变的一部分，从而恢复行动的可能。
+    metadata: {principle: reflection}
+

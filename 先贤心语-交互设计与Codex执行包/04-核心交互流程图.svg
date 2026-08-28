@@ -1,0 +1,99 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1000" viewBox="0 0 1600 1000" role="img" aria-labelledby="title desc">
+  <title id="title">先贤心语核心交互流程图</title>
+  <desc id="desc">从首页或困惑出发，选择人物，进行主动对话，查看引用和记忆，最终生成心语札记并继续交谈。</desc>
+  <defs>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="10" stdDeviation="14" flood-color="#2E2418" flood-opacity=".08"/>
+    </filter>
+    <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+      <path d="M0,0 L12,6 L0,12 z" fill="#9B7A3A"/>
+    </marker>
+    <style>
+      .title{font:700 54px "Noto Serif SC","Songti SC",serif;fill:#1D1B18}
+      .sub{font:400 23px "Noto Sans SC","PingFang SC",sans-serif;fill:#6D655A}
+      .step{font:600 29px "Noto Serif SC","Songti SC",serif;fill:#1D1B18}
+      .body{font:400 18px "Noto Sans SC","PingFang SC",sans-serif;fill:#6D655A}
+      .num{font:700 20px "Noto Sans SC",sans-serif;fill:#FBF8F0}
+      .node{fill:#FBF8F0;stroke:#D8D0C2;stroke-width:2}
+      .node-active{fill:#FFF9F3;stroke:#A4472D;stroke-width:3}
+      .line{fill:none;stroke:#9B7A3A;stroke-width:3;marker-end:url(#arrow)}
+      .branch{fill:none;stroke:#A4472D;stroke-width:3;stroke-dasharray:9 8;marker-end:url(#arrow)}
+    </style>
+  </defs>
+
+  <rect width="1600" height="1000" fill="#F4F0E6"/>
+  <path d="M0 165 C260 90 360 205 610 130 S1100 65 1600 155" fill="none" stroke="#D8D0C2" stroke-width="2" opacity=".5"/>
+  <text x="90" y="92" class="title">先贤心语 · 核心交互流程</text>
+  <text x="92" y="132" class="sub">从“我在困惑什么”出发，经由思想人格对话，沉淀为可以继续使用的个人思想档案。</text>
+
+  <!-- Row 1 -->
+  <g filter="url(#shadow)">
+    <rect x="90" y="215" rx="20" ry="20" width="390" height="150" class="node"/>
+    <circle cx="135" cy="260" r="20" fill="#A4472D"/><text x="129" y="267" class="num">1</text>
+    <text x="170" y="265" class="step">首页发现</text>
+    <text x="128" y="309" class="body">搜索、筛选人物，或直接输入当前困惑</text>
+    <text x="128" y="338" class="body">入口：人物 / 时代 / 话题 / 困惑</text>
+
+    <rect x="605" y="215" rx="20" ry="20" width="390" height="150" class="node"/>
+    <circle cx="650" cy="260" r="20" fill="#A4472D"/><text x="644" y="267" class="num">2</text>
+    <text x="685" y="265" class="step">思想路径</text>
+    <text x="643" y="309" class="body">AI 提取线索，只追问一个关键问题</text>
+    <text x="643" y="338" class="body">解释推荐三位人物的不同切入角度</text>
+
+    <rect x="1120" y="215" rx="20" ry="20" width="390" height="150" class="node"/>
+    <circle cx="1165" cy="260" r="20" fill="#A4472D"/><text x="1159" y="267" class="num">3</text>
+    <text x="1200" y="265" class="step">人物详情</text>
+    <text x="1158" y="309" class="body">人物简介、谈话方式、适聊问题、资料</text>
+    <text x="1158" y="338" class="body">预览人物会如何主动开场</text>
+  </g>
+
+  <path d="M480 290 H590" class="line"/>
+  <path d="M995 290 H1105" class="line"/>
+  <path d="M480 335 C720 430 920 420 1120 335" class="branch"/>
+  <text x="700" y="420" class="body" fill="#A4472D">知道想找谁时，可跳过思想路径</text>
+
+  <!-- Row 2 -->
+  <g filter="url(#shadow)">
+    <rect x="90" y="505" rx="20" ry="20" width="390" height="150" class="node-active"/>
+    <circle cx="135" cy="550" r="20" fill="#A4472D"/><text x="129" y="557" class="num">4</text>
+    <text x="170" y="555" class="step">人物主动开场</text>
+    <text x="128" y="599" class="body">根据入口困惑生成第一句追问</text>
+    <text x="128" y="628" class="body">提供可修改的快捷回答</text>
+
+    <rect x="605" y="505" rx="20" ry="20" width="390" height="150" class="node-active"/>
+    <circle cx="650" cy="550" r="20" fill="#A4472D"/><text x="644" y="557" class="num">5</text>
+    <text x="685" y="555" class="step">正式对话</text>
+    <text x="643" y="599" class="body">复述 → 追问 → 挑战 → 行动</text>
+    <text x="643" y="628" class="body">支持流式回复、停止、重试与朗读</text>
+
+    <rect x="1120" y="505" rx="20" ry="20" width="390" height="150" class="node"/>
+    <circle cx="1165" cy="550" r="20" fill="#A4472D"/><text x="1159" y="557" class="num">6</text>
+    <text x="1200" y="555" class="step">资料与记忆</text>
+    <text x="1158" y="599" class="body">展开原文、译文、解释和来源</text>
+    <text x="1158" y="628" class="body">查看、编辑、暂停或删除长期记忆</text>
+  </g>
+
+  <path d="M1315 365 V460 C1315 485 1285 490 1245 490 H500 C470 490 430 495 430 505" class="line"/>
+  <path d="M480 580 H590" class="line"/>
+  <path d="M995 580 H1105" class="line"/>
+  <path d="M1120 625 C1060 680 1030 680 970 625" class="branch"/>
+
+  <!-- Row 3 -->
+  <g filter="url(#shadow)">
+    <rect x="250" y="790" rx="20" ry="20" width="450" height="140" class="node"/>
+    <circle cx="295" cy="835" r="20" fill="#A4472D"/><text x="289" y="842" class="num">7</text>
+    <text x="330" y="840" class="step">结束并生成札记</text>
+    <text x="288" y="884" class="body">沉淀处境、根源、新理解、依据和行动</text>
+    <text x="288" y="913" class="body">用户可以编辑，系统自动保存</text>
+
+    <rect x="900" y="790" rx="20" ry="20" width="450" height="140" class="node"/>
+    <circle cx="945" cy="835" r="20" fill="#A4472D"/><text x="939" y="842" class="num">8</text>
+    <text x="980" y="840" class="step">继续使用</text>
+    <text x="938" y="884" class="body">继续交谈、设置练习、导出札记</text>
+    <text x="938" y="913" class="body">长期主题成为下一次对话的线索</text>
+  </g>
+
+  <path d="M1315 655 V720 C1315 755 1270 765 1190 765 H730 C675 765 610 775 610 790" class="line"/>
+  <path d="M700 860 H885" class="line"/>
+  <path d="M1120 790 C1070 720 930 710 850 770" class="branch"/>
+</svg>
