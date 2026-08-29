@@ -177,6 +177,28 @@ class StudioCalibration(BaseModel):
     unlike_response: str = Field(default="", max_length=2000)
 
 
+class StudioHealthDimension(ApiModel):
+    key: str
+    label: str
+    score: int
+    status: Literal["strong", "usable", "gap"]
+    detail: str
+
+
+class StudioHealthReport(ApiModel):
+    readiness_level: Literal["轮廓版", "可用版", "推荐版", "高保真版"]
+    overall_score: int
+    effective_chars: int
+    substantive_utterances: int
+    decision_signals: int
+    domains_covered: list[str]
+    source_types: list[str]
+    dimensions: list[StudioHealthDimension]
+    gaps: list[str]
+    recommended_questions: list[str]
+    can_distill: bool
+
+
 class StudioSourceResponse(ApiModel):
     id: str
     filename: str

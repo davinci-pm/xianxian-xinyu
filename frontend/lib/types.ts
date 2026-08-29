@@ -170,6 +170,28 @@ export interface StudioDistillationResult {
   quality_score: number;
 }
 
+export interface StudioHealthDimension {
+  key: string;
+  label: string;
+  score: number;
+  status: "strong" | "usable" | "gap";
+  detail: string;
+}
+
+export interface StudioHealthReport {
+  readiness_level: "轮廓版" | "可用版" | "推荐版" | "高保真版";
+  overall_score: number;
+  effective_chars: number;
+  substantive_utterances: number;
+  decision_signals: number;
+  domains_covered: string[];
+  source_types: string[];
+  dimensions: StudioHealthDimension[];
+  gaps: string[];
+  recommended_questions: string[];
+  can_distill: boolean;
+}
+
 export interface OwnedPersona extends PersonaCard {
   version: string;
   quality_score: number;

@@ -52,6 +52,7 @@ from app.schemas.api import (
     StudioCalibration,
     StudioClaimResponse,
     StudioDistillationResponse,
+    StudioHealthReport,
     StudioProjectCreate,
     StudioProjectResponse,
     StudioSourceCreate,
@@ -70,7 +71,11 @@ from app.services.llm.base import GenerationContext
 from app.services.llm.factory import get_model_provider
 from app.services.llm.openai_compatible import EmptyModelContentError
 from app.services.memory import confirm_memory, create_memory_candidate, list_confirmed_memories
-from app.services.persona_distillation import DistillationInputError, distill_project
+from app.services.persona_distillation import (
+    DistillationInputError,
+    analyze_project_health,
+    distill_project,
+)
 from app.services.persona_loader import PersonaPack
 from app.services.persona_runtime import load_runtime_persona_pack
 from app.services.safety import (
@@ -554,6 +559,28 @@ def add_studio_source(
     db.commit()
     db.refresh(source)
     return _studio_source_response(source)
+
+
+@router.post(
+    "/studio/projects/{project_id}/health",
+    response_model=StudioHealthReport,
+)
+def analyze_studio_project(
+    project_id: str,
+    payload: StudioCalibration,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> StudioHealthReport:
+    identity = resolve_visitor(request, db, require_auth=True)
+    project = _owned_project(db, project_id, identity)
+    sources = list(
+        db.scalars(
+            select(PersonaSourceFile)
+            .where(PersonaSourceFile.project_id == project.id)
+            .order_by(PersonaSourceFile.created_at, PersonaSourceFile.id)
+        )
+    )
+    return StudioHealthReport.model_validate(analyze_project_health(sources, payload.model_dump()))
 
 
 @router.post(

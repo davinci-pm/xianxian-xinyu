@@ -11,6 +11,7 @@ import type {
   SessionInfo,
   SkillInfo,
   StudioDistillationResult,
+  StudioHealthReport,
   StudioProject,
   StudioSource,
 } from "@/lib/types";
@@ -82,6 +83,15 @@ export const api = {
     time_range: string | null;
     rights_confirmed: boolean;
   }) => jsonRequest<StudioSource>(`/studio/projects/${projectId}/sources`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  }),
+  analyzeStudioProject: (projectId: string, payload: {
+    core_values: string;
+    decision_case: string;
+    never_do: string;
+    unlike_response: string;
+  }) => jsonRequest<StudioHealthReport>(`/studio/projects/${projectId}/health`, {
     method: "POST",
     body: JSON.stringify(payload),
   }),

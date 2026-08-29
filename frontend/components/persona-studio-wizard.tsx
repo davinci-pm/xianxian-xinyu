@@ -4,7 +4,7 @@ import { ChangeEvent, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { ArrowRightIcon, BookIcon, SparkIcon } from "@/components/icons";
 import { api } from "@/lib/api";
-import type { PersonaTargetType } from "@/lib/types";
+import type { PersonaTargetType, StudioHealthReport } from "@/lib/types";
 
 interface UploadDraft {
   name: string;
@@ -48,6 +48,8 @@ export default function PersonaStudioWizard() {
   const [unlikeResponse, setUnlikeResponse] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [projectId, setProjectId] = useState<string | null>(null);
+  const [health, setHealth] = useState<StudioHealthReport | null>(null);
 
   const totalChars = useMemo(() => files.reduce((sum, file) => sum + file.chars, 0), [files]);
   const canContinueProfile = name.trim().length > 0 && purpose.trim().length >= 8;
@@ -75,36 +77,61 @@ export default function PersonaStudioWizard() {
     event.target.value = "";
   }
 
-  async function finish() {
+  function calibrationPayload() {
+    return {
+      core_values: coreValues.trim(),
+      decision_case: decisionCase.trim(),
+      never_do: neverDo.trim(),
+      unlike_response: unlikeResponse.trim(),
+    };
+  }
+
+  async function analyze() {
     if (!canDistill) return;
     setSubmitting(true);
     setError(null);
     try {
-      const project = await api.createStudioProject({
-        name: name.trim(),
-        target_type: targetType,
-        relationship: relationship.trim(),
-        purpose: purpose.trim(),
-        language: "zh-CN",
-      });
-      await Promise.all(files.map((file) => api.addStudioSource(project.id, {
-        filename: file.name,
-        source_type: sourceType,
-        mime_type: file.type,
-        content: file.content,
-        target_speaker: targetSpeaker.trim() || null,
-        time_range: timeRange.trim() || null,
-        rights_confirmed: rightsConfirmed,
-      })));
-      const result = await api.distillStudioProject(project.id, {
-        core_values: coreValues.trim(),
-        decision_case: decisionCase.trim(),
-        never_do: neverDo.trim(),
-        unlike_response: unlikeResponse.trim(),
-      });
+      let activeProjectId = projectId;
+      if (!activeProjectId) {
+        const project = await api.createStudioProject({
+          name: name.trim(),
+          target_type: targetType,
+          relationship: relationship.trim(),
+          purpose: purpose.trim(),
+          language: "zh-CN",
+        });
+        activeProjectId = project.id;
+        setProjectId(project.id);
+        await Promise.all(files.map((file) => api.addStudioSource(project.id, {
+          filename: file.name,
+          source_type: sourceType,
+          mime_type: file.type,
+          content: file.content,
+          target_speaker: targetSpeaker.trim() || null,
+          time_range: timeRange.trim() || null,
+          rights_confirmed: rightsConfirmed,
+        })));
+      }
+      const report = await api.analyzeStudioProject(activeProjectId, calibrationPayload());
+      setHealth(report);
+      setStep(4);
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "资料分析失败，请稍后重试。");
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function finish() {
+    if (!projectId || !health?.can_distill) return;
+    setSubmitting(true);
+    setError(null);
+    try {
+      const result = await api.distillStudioProject(projectId, calibrationPayload());
       router.push(`/me?created=${encodeURIComponent(result.persona.slug)}`);
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : "生成失败，请稍后重试。");
+    } finally {
       setSubmitting(false);
     }
   }
@@ -120,7 +147,7 @@ export default function PersonaStudioWizard() {
       </header>
 
       <ol className="studio-progress" aria-label="创建进度">
-        {["人物基础卡", "上传资料", "校准并生成"].map((label, index) => (
+        {["人物基础卡", "上传资料", "校准判断", "质量体检"].map((label, index) => (
           <li className={step === index + 1 ? "active" : step > index + 1 ? "done" : ""} key={label}>
             <span>{String(index + 1).padStart(2, "0")}</span><b>{label}</b>
           </li>
@@ -133,7 +160,7 @@ export default function PersonaStudioWizard() {
             <p className="form-kicker">第一步</p>
             <h2>你想留下谁？</h2>
             <div className="studio-field">
-              <label htmlFor="persona-name">数字人的名称</label>
+              <label htmlFor="persona-name">心智分身的名称</label>
               <input id="persona-name" maxLength={80} onChange={(event) => setName(event.target.value)} placeholder="可以是真名，也可以只是你熟悉的称呼" value={name} />
             </div>
             <fieldset className="studio-fieldset">
@@ -189,14 +216,44 @@ export default function PersonaStudioWizard() {
             </div>
             <aside className="distill-summary"><SparkIcon size={24} /><div><strong>即将生成“{name || "未命名人物"}”</strong><p>{files.length} 份资料 · {totalChars.toLocaleString("zh-CN")} 字符 · 默认仅你的账号可见</p></div></aside>
             {error && <div className="status-banner status-error" role="alert">{error}</div>}
-            <div className="studio-actions"><button className="button button-secondary" disabled={submitting} onClick={() => setStep(2)} type="button">返回</button><button className="button button-primary" disabled={!canDistill || submitting} onClick={finish} type="button">{submitting ? "正在提炼人物…" : "开始蒸馏"} <SparkIcon size={17} /></button></div>
+            <div className="studio-actions"><button className="button button-secondary" disabled={submitting} onClick={() => setStep(projectId ? 4 : 2)} type="button">{projectId ? "返回体检" : "返回"}</button><button className="button button-primary" disabled={!canDistill || submitting} onClick={analyze} type="button">{submitting ? "正在分析资料…" : projectId ? "重新计算质量" : "先做质量体检"} <ArrowRightIcon size={17} /></button></div>
+          </div>
+        )}
+
+        {step === 4 && health && (
+          <div className="studio-form-panel health-panel">
+            <p className="form-kicker">第四步</p>
+            <div className="health-hero">
+              <div><span>当前可生成</span><h2>{health.readiness_level}</h2><p>质量分 {health.overall_score}/100。这不是安全审核，而是帮你判断补什么资料最值得。</p></div>
+              <strong>{health.overall_score}</strong>
+            </div>
+            <div className="health-dimensions">
+              {health.dimensions.map((dimension) => (
+                <article className={dimension.status} key={dimension.key}>
+                  <header><span>{dimension.label}</span><b>{dimension.score}</b></header>
+                  <i><span style={{ width: `${dimension.score}%` }} /></i>
+                  <p>{dimension.detail}</p>
+                </article>
+              ))}
+            </div>
+            <div className="health-evidence-summary">
+              <div><b>{health.substantive_utterances}</b><span>完整表达</span></div>
+              <div><b>{health.decision_signals}</b><span>决策证据</span></div>
+              <div><b>{health.domains_covered.length}</b><span>生活情境</span></div>
+            </div>
+            <section className="health-gaps">
+              <div><h3>现在最值得补的资料</h3><ol>{health.gaps.map((gap) => <li key={gap}>{gap}</li>)}</ol></div>
+              <div><h3>可以直接去问的校准问题</h3><ol>{health.recommended_questions.map((question) => <li key={question}>{question}</li>)}</ol></div>
+            </section>
+            {error && <div className="status-banner status-error" role="alert">{error}</div>}
+            <div className="studio-actions"><button className="button button-secondary" disabled={submitting} onClick={() => setStep(3)} type="button">回去补充校准</button><button className="button button-primary" disabled={!health.can_distill || submitting} onClick={finish} type="button">{submitting ? "正在生成心智分身…" : "生成心智分身"} <SparkIcon size={17} /></button></div>
           </div>
         )}
 
         <aside className="studio-side-note">
           <span>女娲 · 造人记</span>
           <blockquote>真正有价值的不是复读一个人说过什么，而是保留他如何判断、何时犹豫，以及哪些事绝不妥协。</blockquote>
-          <ul><li>人物资料与聊天记忆分开保存</li><li>资料之外的回答标记为推断</li><li>生成后进入“我的数字人”</li></ul>
+          <ul><li>人物资料与聊天记忆分开保存</li><li>核心判断尽量绑定原始证据</li><li>生成后进入“我的心智分身”</li></ul>
         </aside>
       </section>
     </main>

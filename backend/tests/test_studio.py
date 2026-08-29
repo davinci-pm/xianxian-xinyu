@@ -2,7 +2,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from app.db.session import SessionLocal
-from app.models import Conversation, KnowledgeDocument, Persona
+from app.models import Conversation, KnowledgeDocument, Persona, PersonaClaim
 
 
 def _login(client: TestClient, code: str) -> None:
@@ -60,14 +60,27 @@ def test_private_studio_builds_versioned_persona_and_keeps_it_isolated(
     assert uploaded.status_code == 201
     assert uploaded.json()["char_count"] > 800
 
+    calibration = {
+        "core_values": "诚实、长期投入、家庭责任",
+        "decision_case": "面对新机会时先做小实验，根据反馈决定是否长期投入。",
+        "never_do": "不会用虚假的短期成绩换取信任。",
+        "unlike_response": "不经分析就斩钉截铁替别人做决定。",
+    }
+    health = client.post(
+        f"/api/v1/studio/projects/{project_id}/health",
+        json=calibration,
+    )
+    assert health.status_code == 200
+    health_payload = health.json()
+    assert health_payload["can_distill"] is True
+    assert health_payload["decision_signals"] >= 20
+    assert health_payload["overall_score"] >= 60
+    assert len(health_payload["dimensions"]) == 6
+    assert health_payload["recommended_questions"]
+
     distilled = client.post(
         f"/api/v1/studio/projects/{project_id}/distill",
-        json={
-            "core_values": "诚实、长期投入、家庭责任",
-            "decision_case": "面对新机会时先做小实验，根据反馈决定是否长期投入。",
-            "never_do": "不会用虚假的短期成绩换取信任。",
-            "unlike_response": "不经分析就斩钉截铁替别人做决定。",
-        },
+        json=calibration,
     )
     assert distilled.status_code == 200
     payload = distilled.json()
@@ -100,12 +113,20 @@ def test_private_studio_builds_versioned_persona_and_keeps_it_isolated(
         assert document is not None
         assert "13800138000" not in document.content
         assert "[手机号已隐藏]" in document.content
+        claim = db.scalar(
+            select(PersonaClaim).where(
+                PersonaClaim.project_id == project_id,
+                PersonaClaim.claim_type == "principle",
+            )
+        )
+        assert claim is not None
+        assert '"creator_calibration"' in claim.evidence_json
+        assert '"excerpt"' in claim.evidence_json
 
     with TestClient(client.app) as other_user:
         _login(other_user, "SAGE-BETA-002")
         assert other_user.get(f"/api/v1/studio/projects/{project_id}").status_code == 404
         assert other_user.get(f"/api/v1/personas/{slug}").status_code == 404
         assert (
-            other_user.post("/api/v1/conversations", json={"persona_slug": slug}).status_code
-            == 404
+            other_user.post("/api/v1/conversations", json={"persona_slug": slug}).status_code == 404
         )

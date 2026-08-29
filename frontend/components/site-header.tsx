@@ -9,7 +9,7 @@ const links = [
   { href: "/", label: "人物发现" },
   { href: "/paths", label: "思想路径" },
   { href: "/notes", label: "心语札记" },
-  { href: "/me", label: "我的数字人" },
+  { href: "/me", label: "我的心智分身" },
 ];
 
 export default function SiteHeader() {

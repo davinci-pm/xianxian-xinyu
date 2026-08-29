@@ -24,11 +24,11 @@ export default function StudioDashboard() {
   return (
     <main className="studio-dashboard page-shell" id="main-content">
       <header className="studio-dashboard-hero">
-        <div><p className="eyebrow"><span /> 女娲工坊</p><h1>不是模仿一个口吻，<br />而是整理一套留下来的判断。</h1><p>从聊天、文章和人生片段中提炼数字人物。生成后，它会回到你的个人主页。</p></div>
-        <Link className="button button-primary" href="/studio/new">创建一个数字人 <ArrowRightIcon /></Link>
+        <div><p className="eyebrow"><span /> 女娲工坊</p><h1>不是模仿一个口吻，<br />而是整理一套留下来的判断。</h1><p>从聊天、文章和人生片段中提炼心智分身。生成后，它会回到你的个人主页。</p></div>
+        <Link className="button button-primary" href="/studio/new">创建一个心智分身 <ArrowRightIcon /></Link>
       </header>
       <section className="studio-projects">
-        <header><div><span>人物草稿</span><h2>正在塑形</h2></div><Link href="/me">查看我的数字人 <ArrowRightIcon size={16} /></Link></header>
+        <header><div><span>人物草稿</span><h2>正在塑形</h2></div><Link href="/me">查看我的心智分身 <ArrowRightIcon size={16} /></Link></header>
         {loading && <div className="studio-empty"><SparkIcon /><p>正在整理你的工坊…</p></div>}
         {error && <div className="status-banner status-error" role="alert">{error}</div>}
         {!loading && !error && projects.length === 0 && <div className="studio-empty"><SparkIcon size={30} /><h3>工坊里还没有人物草稿</h3><p>从一份聊天记录或一组文章开始，不必一次准备完所有资料。</p><Link className="button button-secondary" href="/studio/new">开始第一次蒸馏</Link></div>}

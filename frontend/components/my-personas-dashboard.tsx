@@ -19,7 +19,7 @@ export default function MyPersonasDashboard() {
   useEffect(() => {
     Promise.all([api.ownedPersonas(), api.conversations()])
       .then(([owned, recent]) => { setPersonas(owned); setConversations(recent.slice(0, 4)); })
-      .catch((caught) => setError(caught instanceof Error ? caught.message : "暂时无法读取你的数字人。"))
+      .catch((caught) => setError(caught instanceof Error ? caught.message : "暂时无法读取你的心智分身。"))
       .finally(() => setLoading(false));
   }, []);
 
@@ -38,15 +38,15 @@ export default function MyPersonasDashboard() {
   return (
     <main className="my-personas-page" id="main-content">
       <section className="my-personas-hero page-shell">
-        <div><p className="eyebrow"><span /> 我的主页</p><h1>你留下的人，<br />都在这里继续生长。</h1><p>每个数字人只属于你的账号。可以继续聊天、补充资料，或回到某个旧版本。</p></div>
-        <Link className="button button-primary" href="/studio/new">创建数字人 <SparkIcon size={17} /></Link>
+        <div><p className="eyebrow"><span /> 我的主页</p><h1>你留下的人，<br />都在这里继续生长。</h1><p>每个心智分身只属于你的账号。可以继续聊天、补充资料，或回到某个旧版本。</p></div>
+        <Link className="button button-primary" href="/studio/new">创建心智分身 <SparkIcon size={17} /></Link>
       </section>
 
       <section className="my-personas-section page-shell">
-        <header className="section-heading"><div><p className="eyebrow"><span /> 我的数字人</p><h2>私人思想资产</h2></div><Link className="text-link" href="/studio">进入女娲工坊 <ArrowRightIcon /></Link></header>
-        {loading && <div className="persona-grid" aria-label="正在载入数字人"><div className="persona-card persona-skeleton" /></div>}
+        <header className="section-heading"><div><p className="eyebrow"><span /> 我的心智分身</p><h2>私人思想资产</h2></div><Link className="text-link" href="/studio">进入女娲工坊 <ArrowRightIcon /></Link></header>
+        {loading && <div className="persona-grid" aria-label="正在载入心智分身"><div className="persona-card persona-skeleton" /></div>}
         {error && <div className="status-banner status-error" role="alert">{error}</div>}
-        {!loading && personas.length === 0 && <div className="my-personas-empty"><div className="empty-seal">娲</div><h3>还没有属于你的数字人</h3><p>上传一份聊天记录、几封邮件或一组文章，先生成一个只对你可见的初版。</p><Link className="button button-primary" href="/studio/new">去创建第一个人物</Link></div>}
+        {!loading && personas.length === 0 && <div className="my-personas-empty"><div className="empty-seal">娲</div><h3>还没有属于你的心智分身</h3><p>上传一份聊天记录、几封邮件或一组文章，先生成一个只对你可见的初版。</p><Link className="button button-primary" href="/studio/new">去创建第一个心智分身</Link></div>}
         <div className="owned-persona-grid">
           {personas.map((persona) => (
             <article className="owned-persona-card" key={persona.id}>
