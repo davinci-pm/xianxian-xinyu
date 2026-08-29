@@ -9,18 +9,21 @@ description = "先贤心语端到端纵向切片后端"
 requires-python = ">=3.11"
 dependencies = [
   "alembic>=1.16,<2",
-  "fastembed>=0.8,<0.9",
+  "boto3>=1.40,<2",
   "fastapi>=0.116,<1",
   "httpx>=0.28,<1",
-  "jieba>=0.42,<1",
   "pydantic-settings>=2.10,<3",
   "PyYAML>=6.0,<7",
   "sqlalchemy>=2.0,<3",
-  "uvicorn[standard]>=0.35,<1",
+  "uvicorn>=0.35,<1",
 ]
 
 [project.optional-dependencies]
+rag = [
+  "fastembed>=0.8,<0.9",
+]
 dev = [
+  "fastembed>=0.8,<0.9",
   "mypy>=1.17,<2",
   "pytest>=8.4,<10",
   "pytest-asyncio>=1.1,<2",
@@ -51,5 +54,5 @@ strict = true
 exclude = ["alembic"]
 
 [[tool.mypy.overrides]]
-module = ["yaml"]
+module = ["yaml", "boto3", "botocore.*"]
 ignore_missing_imports = true

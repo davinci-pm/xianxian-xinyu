@@ -5,8 +5,6 @@ import re
 from collections import Counter
 from dataclasses import dataclass
 from functools import lru_cache
-from importlib import import_module
-from typing import Any, cast
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -36,16 +34,15 @@ class KnowledgeHit:
 
 @lru_cache(maxsize=20_000)
 def _tokenize_cached(text: str) -> tuple[str, ...]:
-    jieba = cast(Any, import_module("jieba"))
-    words = [
-        token.strip().lower()
-        for token in jieba.cut_for_search(text)
-        if len(token.strip()) >= 2
+    chinese_sequences = re.findall(r"[\u4e00-\u9fff]+", text)
+    bigrams = [
+        sequence[index : index + 2]
+        for sequence in chinese_sequences
+        for index in range(max(len(sequence) - 1, 0))
     ]
-    chinese = "".join(re.findall(r"[\u4e00-\u9fff]", text))
-    bigrams = [chinese[index : index + 2] for index in range(max(len(chinese) - 1, 0))]
+    short_phrases = [sequence for sequence in chinese_sequences if 2 <= len(sequence) <= 8]
     latin = re.findall(r"[a-zA-Z0-9_]{2,32}", text.lower())
-    return tuple(words + bigrams + latin)
+    return tuple(short_phrases + bigrams + latin)
 
 
 def _tokenize(text: str) -> list[str]:

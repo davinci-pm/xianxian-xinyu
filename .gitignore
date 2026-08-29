@@ -2,8 +2,11 @@
 .env
 .env.*
 !.env.example
+.deployment/
 backend/.env
 backend/.venv/
+backend/deploy_assets/
+backend/vefaas_bundle/
 data/*.db
 data/*.db-shm
 data/*.db-wal
@@ -21,3 +24,4 @@ frontend/test-results/
 **/.ruff_cache/
 *.egg-info/
 *.zip
+.vefaas/

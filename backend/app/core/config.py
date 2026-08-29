@@ -1,10 +1,15 @@
 from functools import lru_cache
 from pathlib import Path
+from typing import Self
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
+BACKEND_ROOT = Path(__file__).resolve().parents[2]
+DEPLOY_ASSET_ROOT = BACKEND_ROOT / "deploy_assets"
+DEPLOYMENT_GENERATION_FILE = DEPLOY_ASSET_ROOT / "deployment-generation.txt"
+DEFAULT_ASSET_ROOT = DEPLOY_ASSET_ROOT if DEPLOY_ASSET_ROOT.is_dir() else PROJECT_ROOT
 DEFAULT_DATABASE_PATH = PROJECT_ROOT / "data" / "first_sage.db"
 
 
@@ -44,13 +49,31 @@ class Settings(BaseSettings):
     rate_limit_enabled: bool = True
     rate_limit_requests: int = 30
     rate_limit_window_seconds: int = 60
+    auth_required: bool = False
+    invite_codes: str = ""
+    session_secret: str = Field(default="development-only-change-me", repr=False)
     cookie_secure: bool = False
-    cookie_name: str = "sage_visitor_id"
+    cookie_name: str = "sage_session"
 
-    persona_root: Path = PROJECT_ROOT / "personas"
-    seed_root: Path = PROJECT_ROOT / "data" / "seed"
-    codex_skill_root: Path = Path.home() / ".codex" / "skills"
-    upstream_skill_root: Path = PROJECT_ROOT / "skills" / "upstream"
+    persona_root: Path = DEFAULT_ASSET_ROOT / "personas"
+    seed_root: Path = DEFAULT_ASSET_ROOT / "data" / "seed"
+    codex_skill_root: Path = (
+        DEPLOY_ASSET_ROOT / "codex_skills"
+        if DEPLOY_ASSET_ROOT.is_dir()
+        else Path.home() / ".codex" / "skills"
+    )
+    upstream_skill_root: Path = DEFAULT_ASSET_ROOT / "skills" / "upstream"
+
+    storage_provider: str = "local"
+    s3_endpoint: str | None = None
+    s3_access_key: str | None = Field(default=None, repr=False)
+    s3_secret_key: str | None = Field(default=None, repr=False)
+    s3_bucket: str | None = None
+    s3_region: str = "cn-beijing"
+    db_backup_key: str = "db/persona-chat.db"
+    db_backup_interval_seconds: int = 300
+    db_backup_keep_versions: int = 12
+    database_bootstrap_path: Path = DEPLOY_ASSET_ROOT / "data" / "bootstrap.db"
 
     rag_embedding_enabled: bool = True
     rag_embedding_provider: str = "fastembed"
@@ -61,6 +84,18 @@ class Settings(BaseSettings):
     rag_keyword_candidates: int = 12
     rag_vector_candidates: int = 12
     rag_final_limit: int = 4
+
+    @model_validator(mode="after")
+    def use_revision_scoped_database_path(self) -> Self:
+        if self.app_env != "production" or self.storage_provider != "s3":
+            return self
+        if not DEPLOYMENT_GENERATION_FILE.is_file():
+            return self
+        generation = DEPLOYMENT_GENERATION_FILE.read_text(encoding="utf-8").strip()
+        if not generation or any(not (char.isalnum() or char == "-") for char in generation):
+            raise ValueError("部署世代标识无效")
+        self.database_url = f"sqlite+pysqlite:////tmp/data/{generation}/persona-chat.db"
+        return self
 
 
 @lru_cache

@@ -16,7 +16,7 @@ export default function CharacterArt({ slug, name, priority = false, variant = "
     <div className={`character-art character-art-${variant} art-${slug}`}>
       {src ? (
         <Image
-          alt={`${shortName}的原创 AI 插画肖像`}
+          alt={`${shortName}的人物肖像`}
           fill
           priority={priority}
           sizes={variant === "hero" ? "(max-width: 760px) 92vw, 48vw" : variant === "avatar" || variant === "mini" ? "160px" : "(max-width: 760px) 78vw, 360px"}
@@ -28,8 +28,6 @@ export default function CharacterArt({ slug, name, priority = false, variant = "
           <small>{personaMarks[slug] ?? "思"}</small>
         </div>
       )}
-      <span className="character-seal" aria-hidden="true">AI</span>
     </div>
   );
 }
-

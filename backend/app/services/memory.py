@@ -23,6 +23,7 @@ def extract_memory_candidate(
     db: Session,
     *,
     visitor_id: str,
+    user_id: str | None,
     persona_id: str,
     conversation_id: str,
     message: Message,
@@ -35,6 +36,7 @@ def extract_memory_candidate(
     content = f"用户{match.group(1)}{match.group(2).strip()}"
     candidate = Memory(
         visitor_id=visitor_id,
+        user_id=user_id,
         persona_id=persona_id,
         conversation_id=conversation_id,
         kind="goal_or_unresolved_issue",
@@ -50,12 +52,18 @@ def extract_memory_candidate(
 
 
 def list_confirmed_memories(
-    db: Session, visitor_id: str, persona_id: str, limit: int = 5
+    db: Session,
+    visitor_id: str,
+    persona_id: str,
+    limit: int = 5,
+    *,
+    user_id: str | None = None,
 ) -> list[Memory]:
+    owner_filter = Memory.user_id == user_id if user_id else Memory.visitor_id == visitor_id
     statement = (
         select(Memory)
         .where(
-            Memory.visitor_id == visitor_id,
+            owner_filter,
             Memory.persona_id == persona_id,
             Memory.scope == "long_term",
             Memory.status == "confirmed",

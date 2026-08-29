@@ -23,7 +23,7 @@ export default defineConfig({
       timeout: 60_000,
     },
     {
-      command: "BACKEND_URL=http://127.0.0.1:8876 npm run dev -- --hostname 127.0.0.1 --port 3100",
+      command: "BACKEND_URL=http://127.0.0.1:8876 npm run build && cp -R .next/static .next/standalone/.next/static && cp -R public .next/standalone/public && HOSTNAME=127.0.0.1 PORT=3100 node .next/standalone/server.js",
       cwd: ".",
       url: "http://127.0.0.1:3100",
       reuseExistingServer: true,

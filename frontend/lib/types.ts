@@ -96,8 +96,10 @@ export interface StreamEvent {
 
 export interface SessionInfo {
   authenticated: boolean;
+  auth_required: boolean;
   locale: string;
   long_memory_available: boolean;
+  display_name: string | null;
 }
 
 export interface SkillInfo {

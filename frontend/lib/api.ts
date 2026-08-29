@@ -20,11 +20,18 @@ async function jsonRequest<T>(path: string, init?: RequestInit): Promise<T> {
     credentials: "same-origin",
   });
   if (!response.ok) throw new Error(`API ${response.status}`);
+  if (response.status === 204) return undefined as T;
   return (await response.json()) as T;
 }
 
 export const api = {
   session: () => jsonRequest<SessionInfo>("/session"),
+  login: (inviteCode: string) =>
+    jsonRequest<SessionInfo>("/auth/login", {
+      method: "POST",
+      body: JSON.stringify({ invite_code: inviteCode }),
+    }),
+  logout: () => jsonRequest<void>("/auth/logout", { method: "POST" }),
   personas: () => jsonRequest<PersonaCard[]>("/personas"),
   persona: (slug: string) => jsonRequest<PersonaDetail>(`/personas/${slug}`),
   conversations: () => jsonRequest<ConversationSummary[]>("/conversations"),

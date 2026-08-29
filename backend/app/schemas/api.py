@@ -10,8 +10,14 @@ class ApiModel(BaseModel):
 
 class SessionResponse(ApiModel):
     authenticated: bool
+    auth_required: bool
     locale: str
     long_memory_available: bool
+    display_name: str | None = None
+
+
+class InviteLoginRequest(BaseModel):
+    invite_code: str = Field(min_length=4, max_length=128)
 
 
 class PersonaCard(ApiModel):

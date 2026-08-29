@@ -31,6 +31,7 @@ from app.schemas.api import (
     ConversationCreateResponse,
     ConversationDetail,
     ConversationSummary,
+    InviteLoginRequest,
     MemoryConfirmRequest,
     MemoryResponse,
     MessageResponse,
@@ -39,6 +40,12 @@ from app.schemas.api import (
     SessionResponse,
     SkillResponse,
     SourceItem,
+)
+from app.services.auth import (
+    attach_visitor_to_user,
+    encode_session_cookie,
+    get_or_create_invite_user,
+    match_invite_code,
 )
 from app.services.conversation_director import DialogueStage, conversation_director
 from app.services.intent_classifier import analyze_intent
@@ -128,7 +135,12 @@ def _conversation_detail(
             .order_by(Memory.created_at.desc())
         )
     )
-    confirmed = list_confirmed_memories(db, conversation.visitor_id, persona.id)
+    confirmed = list_confirmed_memories(
+        db,
+        conversation.visitor_id,
+        persona.id,
+        user_id=conversation.user_id,
+    )
     return ConversationDetail(
         id=conversation.id,
         persona=_persona_card(persona),
@@ -149,7 +161,7 @@ def _set_visitor_cookie(response: Response, identity: VisitorIdentity) -> None:
     settings = get_settings()
     response.set_cookie(
         key=settings.cookie_name,
-        value=identity.visitor.id,
+        value=encode_session_cookie(identity.visitor.id),
         httponly=True,
         samesite="lax",
         secure=settings.cookie_secure,
@@ -157,10 +169,18 @@ def _set_visitor_cookie(response: Response, identity: VisitorIdentity) -> None:
     )
 
 
-def _owned_conversation(db: Session, conversation_id: str, visitor_id: str) -> Conversation:
+def _owned_conversation(
+    db: Session, conversation_id: str, identity: VisitorIdentity
+) -> Conversation:
+    owner_filter = (
+        Conversation.user_id == identity.user.id
+        if identity.user
+        else Conversation.visitor_id == identity.visitor.id
+    )
     conversation = db.scalar(
         select(Conversation).where(
-            Conversation.id == conversation_id, Conversation.visitor_id == visitor_id
+            Conversation.id == conversation_id,
+            owner_filter,
         )
     )
     if conversation is None:
@@ -168,9 +188,14 @@ def _owned_conversation(db: Session, conversation_id: str, visitor_id: str) -> C
     return conversation
 
 
-def _owned_memory(db: Session, memory_id: str, visitor_id: str) -> Memory:
+def _owned_memory(db: Session, memory_id: str, identity: VisitorIdentity) -> Memory:
+    owner_filter = (
+        Memory.user_id == identity.user.id
+        if identity.user
+        else Memory.visitor_id == identity.visitor.id
+    )
     memory = db.scalar(
-        select(Memory).where(Memory.id == memory_id, Memory.visitor_id == visitor_id)
+        select(Memory).where(Memory.id == memory_id, owner_filter)
     )
     if memory is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="未找到该记忆")
@@ -185,13 +210,54 @@ def _sse(event: str, data: dict[str, Any]) -> str:
 def get_session(
     request: Request, response: Response, db: Session = Depends(get_db)
 ) -> SessionResponse:
-    identity = resolve_visitor(request, db)
+    identity = resolve_visitor(request, db, require_auth=False)
     _set_visitor_cookie(response, identity)
     return SessionResponse(
-        authenticated=identity.visitor.user_id is not None,
+        authenticated=identity.authenticated,
+        auth_required=get_settings().auth_required,
         locale=identity.visitor.locale,
-        long_memory_available=identity.visitor.user_id is not None,
+        long_memory_available=identity.authenticated,
+        display_name=identity.user.display_name if identity.user else None,
     )
+
+
+@router.post("/auth/login", response_model=SessionResponse)
+def login_with_invite(
+    payload: InviteLoginRequest,
+    request: Request,
+    response: Response,
+    db: Session = Depends(get_db),
+) -> SessionResponse:
+    client_host = request.client.host if request.client else "unknown"
+    rate_limiter.check(f"invite-login:{client_host}")
+    match = match_invite_code(payload.invite_code)
+    if match is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="邀请码无效")
+    identity = resolve_visitor(request, db, require_auth=False)
+    user = get_or_create_invite_user(db, match)
+    attach_visitor_to_user(db, identity.visitor, user)
+    db.commit()
+    authenticated = VisitorIdentity(visitor=identity.visitor, user=user, cookie_created=True)
+    _set_visitor_cookie(response, authenticated)
+    return SessionResponse(
+        authenticated=True,
+        auth_required=get_settings().auth_required,
+        locale=user.locale,
+        long_memory_available=user.long_memory_enabled,
+        display_name=user.display_name,
+    )
+
+
+@router.post("/auth/logout", status_code=status.HTTP_204_NO_CONTENT)
+def logout(response: Response) -> Response:
+    settings = get_settings()
+    response.delete_cookie(
+        settings.cookie_name,
+        httponly=True,
+        secure=settings.cookie_secure,
+        samesite="lax",
+    )
+    return response
 
 
 @router.get("/personas", response_model=list[PersonaCard])
@@ -270,7 +336,12 @@ def create_conversation(
     if persona is None or persona.status != "active":
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="该人物暂不可聊天")
     pack = load_persona_pack(persona.slug)
-    remembered = list_confirmed_memories(db, identity.visitor.id, persona.id)
+    remembered = list_confirmed_memories(
+        db,
+        identity.visitor.id,
+        persona.id,
+        user_id=identity.user.id if identity.user else None,
+    )
     starter = pack.starters[0]
     opening_text = str(starter["text"])
     if remembered:
@@ -279,7 +350,7 @@ def create_conversation(
         )
     conversation = Conversation(
         visitor_id=identity.visitor.id,
-        user_id=identity.visitor.user_id,
+        user_id=identity.user.id if identity.user else None,
         persona_id=persona.id,
         title=f"与{persona.name_zh}的对话",
         stage=DialogueStage.IDENTIFY_PROBLEM,
@@ -316,7 +387,11 @@ def list_conversations(
     rows = db.execute(
         select(Conversation, Persona)
         .join(Persona, Persona.id == Conversation.persona_id)
-        .where(Conversation.visitor_id == identity.visitor.id)
+        .where(
+            Conversation.user_id == identity.user.id
+            if identity.user
+            else Conversation.visitor_id == identity.visitor.id
+        )
         .order_by(Conversation.last_message_at.desc())
     ).all()
     return [
@@ -342,7 +417,7 @@ def get_conversation(
     db: Session = Depends(get_db),
 ) -> ConversationDetail:
     identity = resolve_visitor(request, db)
-    conversation = _owned_conversation(db, conversation_id, identity.visitor.id)
+    conversation = _owned_conversation(db, conversation_id, identity)
     persona = db.get(Persona, conversation.persona_id)
     if persona is None:
         raise HTTPException(status_code=500, detail="会话人物数据缺失")
@@ -359,7 +434,7 @@ def stream_message(
 ) -> StreamingResponse:
     identity = resolve_visitor(request, db)
     rate_limiter.check(f"chat:{identity.visitor.id}")
-    conversation = _owned_conversation(db, conversation_id, identity.visitor.id)
+    conversation = _owned_conversation(db, conversation_id, identity)
     persona = db.get(Persona, conversation.persona_id)
     if persona is None:
         raise HTTPException(status_code=500, detail="会话人物数据缺失")
@@ -526,11 +601,17 @@ async def _generate_reply(
     memory_candidate = extract_memory_candidate(
         db,
         visitor_id=identity.visitor.id,
+        user_id=identity.user.id if identity.user else None,
         persona_id=persona.id,
         conversation_id=conversation.id,
         message=user_message,
     )
-    confirmed_memories = list_confirmed_memories(db, identity.visitor.id, persona.id)
+    confirmed_memories = list_confirmed_memories(
+        db,
+        identity.visitor.id,
+        persona.id,
+        user_id=identity.user.id if identity.user else None,
+    )
     knowledge_hits = retrieve_knowledge(db, persona.id, user_message.content)
     intent_result = await intent_task
     intent_payload = intent_result.analysis.model_dump(mode="json")
@@ -775,7 +856,7 @@ def update_memory(
     db: Session = Depends(get_db),
 ) -> MemoryResponse:
     identity = resolve_visitor(request, db)
-    memory = _owned_memory(db, memory_id, identity.visitor.id)
+    memory = _owned_memory(db, memory_id, identity)
     confirm_memory(memory, payload.action, payload.content)
     db.commit()
     db.refresh(memory)
@@ -791,7 +872,12 @@ def get_memories(
     memories = list(
         db.scalars(
             select(Memory)
-            .where(Memory.visitor_id == identity.visitor.id, Memory.status == "confirmed")
+            .where(
+                Memory.user_id == identity.user.id
+                if identity.user
+                else Memory.visitor_id == identity.visitor.id,
+                Memory.status == "confirmed",
+            )
             .order_by(Memory.confirmed_at.desc())
         )
     )

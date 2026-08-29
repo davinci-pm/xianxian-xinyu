@@ -82,7 +82,11 @@ async def test_stream_uses_large_budget_and_ignores_reasoning_in_user_output(
 
     assert chunks == ["这是最终回答。"]
     assert FakeAsyncClient.last_payload["max_tokens"] == 4096
-    assert "保留整份 Skill 指令" in FakeAsyncClient.last_payload["messages"][0]["content"]
+    system_prompt = FakeAsyncClient.last_payload["messages"][0]["content"]
+    assert "保留整份 Skill 指令" in system_prompt
+    assert "直接以人物第一人称说话" in system_prompt
+    assert "不要自称AI、助手或模型" in system_prompt
+    assert "只有用户明确询问现实身份、真伪或授权时" in system_prompt
 
 
 @pytest.mark.asyncio

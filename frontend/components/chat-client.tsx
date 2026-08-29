@@ -135,7 +135,7 @@ export default function ChatClient({ conversationId }: { conversationId: string 
     <main className="chat-layout-redesign" id="main-content">
       <header className="chat-mobile-header">
         <Link href={`/figures/${conversation.persona.slug}`} aria-label={`查看${name}人物资料`}><CharacterArt slug={conversation.persona.slug} name={conversation.persona.name_zh} variant="avatar" /></Link>
-        <div><strong>{name}</strong><small>{stageLabel(conversation.stage)} · AI 思想人格</small></div>
+        <div><strong>{name}</strong><small>{stageLabel(conversation.stage)}</small></div>
         <button type="button" aria-label="打开对话菜单" onClick={() => setMobileMenu((value) => !value)}><MoreIcon /></button>
         {mobileMenu && <div className="chat-mobile-menu"><button type="button" onClick={() => { setDrawer("sources"); setMobileMenu(false); }}>查看引用</button><button type="button" onClick={() => { setDrawer("memory"); setMobileMenu(false); }}>查看记忆</button><Link href="/notes">心语札记</Link></div>}
       </header>
@@ -145,11 +145,11 @@ export default function ChatClient({ conversationId }: { conversationId: string 
         <CharacterArt slug={conversation.persona.slug} name={conversation.persona.name_zh} variant="avatar" />
         <p className="eyebrow"><span /> 当前对话者</p><h1>{name}</h1><p className="chat-persona-intro">{conversation.persona.short_intro}</p>
         <div className="chat-stage-list"><small>对话进程</small><ol>{dialogueStages.map((stage, index) => <li className={index === currentStageIndex ? "active" : index < currentStageIndex ? "done" : ""} key={stage.key}><span>{index < currentStageIndex ? "✓" : index + 1}</span><div><b>{stage.label}</b><small>{stage.note}</small></div></li>)}</ol></div>
-        <p className="persona-boundary">基于公开资料构建的 AI 思想人格<br />非真人本人 · 不是心理治疗工具</p>
+        <p className="persona-boundary">思想对话基于公开资料与作品构建<br />重要判断请回到原始资料</p>
       </aside>
 
       <section className="chat-center">
-        <div className={conversation.persona.is_living ? "chat-disclaimer living" : "chat-disclaimer"}>{conversation.persona.is_living ? "在世公众人物提示 · 非本人 · 非授权 · 非真实观点 · 非投资/医疗建议" : "基于公开资料构建的 AI 思想人格 · 并非真人本人"}</div>
+        {conversation.persona.is_living && <div className="chat-disclaimer living">在世人物思想对话 · 基于公开资料 · 非本人授权或实时观点</div>}
         <div className="chat-mobile-progress"><span style={{ width: `${((currentStageIndex + 1) / dialogueStages.length) * 100}%` }} /><b>{stageLabel(conversation.stage)}</b><small>{currentStageIndex + 1}/{dialogueStages.length}</small></div>
         <div className="message-list-redesign" aria-live="polite" aria-busy={streaming}>
           <div className="conversation-date"><span>这段对话</span></div>
@@ -177,7 +177,7 @@ export default function ChatClient({ conversationId }: { conversationId: string 
             <textarea ref={textareaRef} id="message-input" value={input} onChange={(event) => setInput(event.target.value)} placeholder={conversation.stage === "SAFETY" ? "你可以回复‘我现在安全’，或继续告诉我此刻的状况…" : "不必组织得很完整，从眼下最难说清的那一点开始…"} rows={2} maxLength={4000} onKeyDown={(event) => { if (shouldSendOnEnter({ key: event.key, shiftKey: event.shiftKey, isComposing: event.nativeEvent.isComposing, keyCode: event.keyCode })) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }} />
             <div className="composer-actions"><span>{input.length > 3600 ? `${input.length}/4000` : "Enter 发送 · Shift + Enter 换行"}</span>{streaming ? <button type="button" className="stop-button" onClick={() => abortRef.current?.abort()}><StopIcon size={16} /> 停止</button> : <button type="submit" disabled={!input.trim()} aria-label="发送消息"><SendIcon /></button>}</div>
           </form>
-          <p className="composer-notice">AI 可能会犯错。重要判断请结合原始资料与现实处境。</p>
+          <p className="composer-notice">重要判断请结合原始资料与现实处境。</p>
         </div>
       </section>
 

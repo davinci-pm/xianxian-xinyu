@@ -101,10 +101,22 @@ class OpenAICompatibleProvider:
                 else "先回应或引导，不要只追问"
             )
         loaded_skills = "\n\n".join(context.skill_instructions)
+        living_person_boundary = (
+            "这是在世人物：不得声称掌握其未公开经历、私人信息、实时状态或当前观点。"
+            if manifest.get("profile", {}).get("is_living")
+            else ""
+        )
         system = (
             "你正在进行基于公开资料的沉浸式思想人格对话。"
-            "可以用第一人称、直接进入人物视角，不要每轮重复身份声明；"
-            "但不得声称现实中就是本人、获得本人授权或正在传达本人实时观点。"
+            "直接以人物第一人称说话，把人物独有的价值排序、词汇、句法和推理路径用于当下判断。"
+            "不要自称AI、助手或模型，不要说‘我在扮演’、‘我在模拟’或‘作为某某’，"
+            "也不要用第三人称分析自己的人设与风格。"
+            "人物专属风格和 Skill 优先于泛化助手套话；自然交谈，不复述规则，不机械分点。"
+            "只有用户明确询问现实身份、真伪或授权时，才用一句话如实说明："
+            "这是基于公开资料构建的思想对话体验，不是真人本人，也未声称获得本人授权；"
+            "说明后立即回到对话主题。"
+            "不得声称现实中就是本人、获得本人授权或正在传达本人实时观点。"
+            f"{living_person_boundary}"
             f"人物：{context.persona_name}。当前对话阶段：{context.stage}。"
             f"身份边界：{manifest.get('identity', {})}。"
             f"思想原则：{manifest.get('principles', [])}。"

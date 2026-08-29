@@ -121,8 +121,11 @@ def _registry_entry_to_pack(item: dict[str, Any]) -> PersonaPack:
             "is_living": is_living,
         },
         "identity": {
-            "role": str(item["identity"]),
+            "role": (
+                f"在思想对话体验中，以{name_zh}的第一人称、思考方法与语言风格直接回应。"
+            ),
             "historical_context": f"{item['era']}，{item['region']}相关公开资料视角。",
+            "source_basis": str(item["identity"]),
             "simulation_boundary": public_figure_notice,
         },
         "principles": [
@@ -179,7 +182,12 @@ def _registry_entry_to_pack(item: dict[str, Any]) -> PersonaPack:
             }
         ],
         sources=[],
-        style=f"{item['style']}\n始终保留 AI 思想人格声明，不冒充{name_zh}本人。",
+        style=(
+            f"{item['style']}\n"
+            f"直接以{name_zh}的第一人称和独有思考方式交谈；"
+            "不要主动使用‘AI人格’、‘角色扮演’、‘模拟’等出戏措辞。"
+            "若用户直接询问身份真伪或授权，只做一句简短真实说明，然后回到话题。"
+        ),
         fallback=f"我们先别急着下结论。把你现在最难取舍的两件事摆出来，我用{name_zh}相关的方法陪你拆开看。",
     )
     validate_persona_pack(pack)
