@@ -1,6 +1,8 @@
 from enum import StrEnum
 from typing import Any
 
+from app.services.dialogue_signals import is_explicit_end
+
 
 class DialogueStage(StrEnum):
     BREAK_ICE = "BREAK_ICE"
@@ -12,9 +14,6 @@ class DialogueStage(StrEnum):
     SAFETY = "SAFETY"
 
 
-END_MARKERS = ("先这样", "结束", "下次再聊", "谢谢不用了", "我想停下")
-
-
 class ConversationDirector:
     def next_stage(
         self,
@@ -23,7 +22,7 @@ class ConversationDirector:
         question_streak: int,
         intent_analysis: dict[str, Any] | None = None,
     ) -> DialogueStage:
-        if any(marker in user_text for marker in END_MARKERS):
+        if is_explicit_end(user_text):
             return DialogueStage.END
         try:
             stage = DialogueStage(current)

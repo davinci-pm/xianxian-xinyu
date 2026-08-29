@@ -304,6 +304,59 @@ def test_memory_candidate_is_committed_before_model_stream_and_user_is_not_dupli
     assert all(item["content"] != current_text for item in captured["recent_messages"])
 
 
+def test_retry_reuses_user_message_after_interrupted_stream(client: TestClient) -> None:
+    from sqlalchemy import func, select
+
+    from app.db.session import SessionLocal
+    from app.models import Conversation, Message
+
+    created = create_confucius_conversation(client)
+    conversation_id = created["conversation"]["id"]
+    retry_key = "interrupted-stream-retry-001"
+    content = "这条消息已经送达，但上一条连接在回答前断开了"
+
+    with SessionLocal() as db:
+        conversation = db.get(Conversation, conversation_id)
+        assert conversation is not None
+        db.add(
+            Message(
+                conversation_id=conversation_id,
+                role="user",
+                content=content,
+                stage=conversation.stage,
+                idempotency_key=retry_key,
+            )
+        )
+        db.commit()
+
+    response = client.post(
+        f"/api/v1/conversations/{conversation_id}/messages/stream",
+        json={"content": content, "idempotency_key": retry_key},
+    )
+    assert response.status_code == 200
+    assert parse_sse(response.text)[-1][0] == "done"
+
+    with SessionLocal() as db:
+        user_count = db.scalar(
+            select(func.count(Message.id)).where(
+                Message.conversation_id == conversation_id,
+                Message.idempotency_key == retry_key,
+            )
+        )
+        assistant_count = db.scalar(
+            select(func.count(Message.id)).where(
+                Message.conversation_id == conversation_id,
+                Message.role == "assistant",
+                Message.created_at
+                >= select(Message.created_at)
+                .where(Message.idempotency_key == retry_key)
+                .scalar_subquery(),
+            )
+        )
+    assert user_count == 1
+    assert assistant_count == 1
+
+
 def test_skill_allowlist_is_visible(client: TestClient) -> None:
     response = client.get("/api/v1/skills")
     assert response.status_code == 200

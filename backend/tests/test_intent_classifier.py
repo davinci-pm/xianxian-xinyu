@@ -33,6 +33,17 @@ async def test_heuristic_classifier_recognizes_explicit_end() -> None:
     assert result.analysis.should_ask_question is False
 
 
+async def test_heuristic_classifier_does_not_end_for_relationship_or_work() -> None:
+    relationship = await HeuristicIntentClassifier().analyze(
+        "这段关系让我绝望，我在考虑结束这段关系", []
+    )
+    work = await HeuristicIntentClassifier().analyze("我想结束这份工作，重新开始", [])
+    assert relationship.analysis.primary_intent != "end"
+    assert relationship.analysis.recommended_stage != "END"
+    assert work.analysis.primary_intent != "end"
+    assert work.analysis.recommended_stage != "END"
+
+
 def test_director_uses_only_confident_model_recommendation() -> None:
     director = ConversationDirector()
     confident = {
@@ -45,6 +56,15 @@ def test_director_uses_only_confident_model_recommendation() -> None:
         == DialogueStage.GUIDANCE
     )
     assert director.should_ask_question(DialogueStage.GUIDANCE, 0, confident) is False
+
+
+def test_director_only_ends_for_explicit_conversation_end() -> None:
+    director = ConversationDirector()
+    assert (
+        director.next_stage("CLARIFY", "我在考虑结束这段关系", 0)
+        == DialogueStage.GUIDANCE
+    )
+    assert director.next_stage("CLARIFY", "请结束本次对话", 0) == DialogueStage.END
 
 
 async def test_explicit_end_uses_zero_network_fast_path(monkeypatch: Any) -> None:

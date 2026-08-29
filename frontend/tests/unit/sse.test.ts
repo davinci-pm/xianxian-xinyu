@@ -25,5 +25,21 @@ describe("SSE parser", () => {
       { event: "done", data: { ok: true } },
     ]);
   });
-});
 
+  it("rejects a connection that closes before the done event", async () => {
+    const encoder = new TextEncoder();
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode('event: chunk\ndata: {"text":"未完成"}\n\n'));
+        controller.close();
+      },
+    });
+    const consume = async () => {
+      for await (const event of readSse(new Response(stream))) {
+        // Consume the stream so completion validation runs.
+        expect(event.event).toBe("chunk");
+      }
+    };
+    await expect(consume()).rejects.toThrow("完成前中断");
+  });
+});

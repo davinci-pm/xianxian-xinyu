@@ -134,6 +134,47 @@ test("安全响应后输入不锁死且可以恢复", async ({ page }, testInfo)
   await expect(page.getByLabel("你也可以自由输入")).toBeEnabled();
 });
 
+test("日常负面表达不会误触发人物暂停", async ({ page }, testInfo) => {
+  const mobile = isMobile(testInfo);
+  await page.goto("/figures/confucius");
+  await startConversation(page, mobile);
+  const input = page.getByLabel("你也可以自由输入");
+  await input.fill("这个项目让我很崩溃，但我想把问题一步步解决");
+  await page.getByRole("button", { name: "发送消息" }).click();
+  await expect(page.locator(".message-card.assistant")).toHaveCount(2);
+  await expect(page.getByTestId("safety-recovery-panel")).toHaveCount(0);
+  await expect(page.getByText("我先暂停人物角色", { exact: false })).toHaveCount(0);
+  await expect(input).toBeEnabled();
+});
+
+test("流式连接提前结束时给出安全重试并成功接续", async ({ page }, testInfo) => {
+  const mobile = isMobile(testInfo);
+  let interrupted = false;
+  await page.route(/\/messages\/stream$/, async (route) => {
+    if (interrupted) {
+      await route.continue();
+      return;
+    }
+    interrupted = true;
+    await route.fulfill({
+      status: 200,
+      contentType: "text/event-stream",
+      body: 'event: chunk\ndata: {"text":"只到一半"}\n\n',
+    });
+  });
+
+  await page.goto("/figures/confucius");
+  await startConversation(page, mobile);
+  const input = page.getByLabel("你也可以自由输入");
+  await input.fill("请帮我分析这个选择");
+  await page.getByRole("button", { name: "发送消息" }).click();
+  const alert = page.locator(".status-banner.status-error");
+  await expect(alert).toContainText("没有完整送达");
+  await alert.getByRole("button", { name: "安全重试" }).click();
+  await expect(page.locator(".message-card.assistant")).toHaveCount(2);
+  await expect(alert).toHaveCount(0);
+});
+
 test("在世公众人物有显著身份和建议边界", async ({ page }) => {
   await page.goto("/figures/fengge-wangmingtianya");
   const notice = page.getByTestId("living-person-notice");

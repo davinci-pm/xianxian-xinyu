@@ -90,7 +90,7 @@ export interface ConversationCreateResponse {
 }
 
 export interface StreamEvent {
-  event: "meta" | "retry" | "chunk" | "degraded" | "done" | "error";
+  event: "meta" | "heartbeat" | "retry" | "chunk" | "degraded" | "done" | "error";
   data: Record<string, unknown>;
 }
 

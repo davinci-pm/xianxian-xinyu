@@ -8,6 +8,7 @@ import httpx
 from pydantic import BaseModel, Field
 
 from app.core.config import Settings, get_settings
+from app.services.dialogue_signals import is_explicit_end
 
 IntentName = Literal[
     "decision",
@@ -84,7 +85,7 @@ class HeuristicIntentClassifier:
         should_ask = True
         signal_count = 0
 
-        if any(marker in text for marker in ("先这样", "结束", "下次再聊", "不聊了")):
+        if is_explicit_end(text):
             primary_intent = "end"
             move = "reflect"
             stage = "END"

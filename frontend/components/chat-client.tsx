@@ -47,6 +47,7 @@ export default function ChatClient({ conversationId }: { conversationId: string 
   const [note, setNote] = useState("");
   const [mobileMenu, setMobileMenu] = useState(false);
   const [savingMemoryId, setSavingMemoryId] = useState<string | null>(null);
+  const [streamNotice, setStreamNotice] = useState("正在理解你的问题…");
   const abortRef = useRef<AbortController | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -75,25 +76,37 @@ export default function ChatClient({ conversationId }: { conversationId: string 
   const send = useCallback(async (content: string, retry?: { key: string }) => {
     const clean = content.trim();
     if (!clean || streaming || !conversation) return;
-    setInput(""); setQuickReplies([]); setStreaming(true); setDegraded(false); setError(null); setFailed(null);
+    setInput(""); setQuickReplies([]); setStreaming(true); setStreamNotice("正在理解你的问题…"); setDegraded(false); setError(null); setFailed(null);
     const idempotencyKey = retry?.key ?? crypto.randomUUID();
     const optimisticUser: LocalMessage = { id: `local-user-${idempotencyKey}`, role: "user", content: clean, stage: conversation.stage, citations: [], degraded: false, created_at: new Date().toISOString() };
     const placeholderId = `stream-${idempotencyKey}`;
     const placeholder: LocalMessage = { id: placeholderId, role: "assistant", content: "", stage: conversation.stage, citations: [], degraded: false, created_at: new Date().toISOString(), localStatus: "streaming" };
     setMessages((current) => appendOptimistic(current, optimisticUser, placeholder, Boolean(retry)));
     const controller = new AbortController(); abortRef.current = controller;
+    let idleTimer = window.setTimeout(() => controller.abort("idle-timeout"), 45_000);
+    const refreshIdleTimer = () => {
+      window.clearTimeout(idleTimer);
+      idleTimer = window.setTimeout(() => controller.abort("idle-timeout"), 45_000);
+    };
     try {
       for await (const event of api.sendMessage(conversationId, clean, idempotencyKey, controller.signal)) {
+        refreshIdleTimer();
         if (event.event === "meta") {
+          setStreamNotice("正在组织回应…");
           const candidate = event.data.memory_candidate as MemoryItem | null | undefined;
           if (candidate) setCandidates((current) => current.some((item) => item.id === candidate.id) ? current : [candidate, ...current]);
           const stage = event.data.stage;
           if (typeof stage === "string") setConversation((current) => current ? { ...current, stage } : current);
         }
         if (event.event === "chunk") {
+          setStreamNotice("回应还在继续…");
           const text = typeof event.data.text === "string" ? event.data.text : "";
           setMessages((current) => current.map((message) => message.id === placeholderId ? { ...message, content: message.content + text } : message));
         }
+        if (event.event === "heartbeat") {
+          setStreamNotice(event.data.phase === "writing" ? "回应还在继续…" : "正在认真思量…");
+        }
+        if (event.event === "retry") setStreamNotice("刚才稍有停顿，正在重新接续…");
         if (event.event === "degraded") setDegraded(true);
         if (event.event === "done") {
           const saved = event.data.message as ChatMessage;
@@ -103,14 +116,14 @@ export default function ChatClient({ conversationId }: { conversationId: string 
         }
       }
     } catch {
-      if (controller.signal.aborted) {
+      if (controller.signal.aborted && controller.signal.reason === "user") {
         setMessages((current) => current.map((message) => message.id === placeholderId ? { ...message, localStatus: "stopped", content: message.content || "已停止本轮生成。" } : message));
       } else {
-        setError("这轮对话没有完整送达。可以使用同一请求安全重试，不会重复提交你的输入。");
+        setError(controller.signal.reason === "idle-timeout" ? "这轮回应等待太久，连接可能已中断。可以安全重试，不会重复提交你的输入。" : "这轮对话没有完整送达。可以安全重试，不会重复提交你的输入。");
         setFailed({ content: clean, key: idempotencyKey });
         setMessages((current) => current.filter((message) => message.id !== placeholderId));
       }
-    } finally { abortRef.current = null; setStreaming(false); }
+    } finally { window.clearTimeout(idleTimer); abortRef.current = null; setStreaming(false); }
   }, [conversation, conversationId, streaming]);
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) { event.preventDefault(); await send(input); }
@@ -158,7 +171,7 @@ export default function ChatClient({ conversationId }: { conversationId: string 
               <div className="message-avatar">{message.role === "assistant" ? <CharacterArt slug={conversation.persona.slug} name={conversation.persona.name_zh} variant="avatar" /> : <span>你</span>}</div>
               <div className="message-content">
                 <header><strong>{message.role === "assistant" ? name : "你"}</strong>{message.stage && <span>{stageLabel(message.stage)}</span>}</header>
-                <div className="message-paper">{message.content ? <RichMessage content={message.content} /> : <span className="thinking"><i /><i /><i /> 正在思量你的话…</span>}{message.localStatus === "stopped" && <small className="message-status">本轮已停止</small>}{message.degraded && <small className="degraded-note">本轮真实生成未完整返回，已使用人物风格保底回复</small>}</div>
+                <div className="message-paper">{message.content ? <RichMessage content={message.content} /> : <span className="thinking"><i /><i /><i /> {streamNotice}</span>}{message.localStatus === "streaming" && message.content && <small className="message-status">{streamNotice}</small>}{message.localStatus === "stopped" && <small className="message-status">本轮已停止</small>}{message.degraded && <small className="degraded-note">本轮真实生成未完整返回，已使用人物风格保底回复</small>}</div>
                 {message.citations?.length > 0 && <button className="message-citation-button" type="button" onClick={() => setDrawer("sources")}><BookIcon size={15} /> 本段参考 {message.citations.length} 条公开资料 <ArrowRightIcon size={14} /></button>}
               </div>
             </article>
@@ -175,7 +188,7 @@ export default function ChatClient({ conversationId }: { conversationId: string 
           <form className="composer-redesign" onSubmit={handleSubmit}>
             <label htmlFor="message-input" className="sr-only">{conversation.stage === "SAFETY" ? "安全支持中，你仍可以自由输入" : "你也可以自由输入"}</label>
             <textarea ref={textareaRef} id="message-input" value={input} onChange={(event) => setInput(event.target.value)} placeholder={conversation.stage === "SAFETY" ? "你可以回复‘我现在安全’，或继续告诉我此刻的状况…" : "不必组织得很完整，从眼下最难说清的那一点开始…"} rows={2} maxLength={4000} onKeyDown={(event) => { if (shouldSendOnEnter({ key: event.key, shiftKey: event.shiftKey, isComposing: event.nativeEvent.isComposing, keyCode: event.keyCode })) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }} />
-            <div className="composer-actions"><span>{input.length > 3600 ? `${input.length}/4000` : "Enter 发送 · Shift + Enter 换行"}</span>{streaming ? <button type="button" className="stop-button" onClick={() => abortRef.current?.abort()}><StopIcon size={16} /> 停止</button> : <button type="submit" disabled={!input.trim()} aria-label="发送消息"><SendIcon /></button>}</div>
+            <div className="composer-actions"><span>{input.length > 3600 ? `${input.length}/4000` : "Enter 发送 · Shift + Enter 换行"}</span>{streaming ? <button type="button" className="stop-button" onClick={() => abortRef.current?.abort("user")}><StopIcon size={16} /> 停止</button> : <button type="submit" disabled={!input.trim()} aria-label="发送消息"><SendIcon /></button>}</div>
           </form>
           <p className="composer-notice">重要判断请结合原始资料与现实处境。</p>
         </div>

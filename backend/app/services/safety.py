@@ -18,7 +18,20 @@ HIGH_RISK_TERMS = (
     "割腕",
     "活着没意义",
 )
-DISTRESS_TERMS = ("崩溃", "绝望", "活不下去", "极端痛苦")
+HIGH_DISTRESS_TERMS = ("活不下去",)
+SUPPORTIVE_DISTRESS_TERMS = ("崩溃", "绝望", "极端痛苦")
+NEGATED_SELF_HARM_TERMS = (
+    "没有想自杀",
+    "没想自杀",
+    "不想自杀",
+    "不会自杀",
+    "不打算自杀",
+    "没有自残",
+    "不会自残",
+    "不打算自残",
+    "没有结束生命的想法",
+    "没有伤害自己的打算",
+)
 SAFETY_CONFIRMATION_TERMS = (
     "我现在安全",
     "我目前安全",
@@ -39,12 +52,17 @@ def _normalize(content: str) -> str:
 
 def assess_safety(content: str) -> SafetyAssessment:
     normalized = _normalize(content)
+    if any(term in normalized for term in NEGATED_SELF_HARM_TERMS):
+        return SafetyAssessment("L0", "none", "explicit_negation", False)
     for term in HIGH_RISK_TERMS:
         if term in normalized:
             return SafetyAssessment("L3", "self_harm", term, True)
-    for term in DISTRESS_TERMS:
+    for term in HIGH_DISTRESS_TERMS:
         if term in normalized:
             return SafetyAssessment("L2", "severe_distress", term, True)
+    for term in SUPPORTIVE_DISTRESS_TERMS:
+        if term in normalized:
+            return SafetyAssessment("L1", "distress", term, False)
     return SafetyAssessment("L0", "none", "none", False)
 
 

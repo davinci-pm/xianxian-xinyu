@@ -208,6 +208,50 @@ def _sse(event: str, data: dict[str, Any]) -> str:
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 
+async def _stream_with_heartbeats(
+    source: AsyncIterator[str], *, interval_seconds: float = 6.0
+) -> AsyncIterator[str]:
+    """Keep the browser connection visibly alive while preprocessing or reasoning."""
+    queue: asyncio.Queue[tuple[str, str | Exception | None]] = asyncio.Queue()
+
+    async def pump() -> None:
+        try:
+            async for event in source:
+                await queue.put(("event", event))
+        except Exception as exc:
+            await queue.put(("error", exc))
+        else:
+            await queue.put(("done", None))
+
+    producer = asyncio.create_task(pump())
+    phase = "preparing"
+    try:
+        while True:
+            try:
+                kind, payload = await asyncio.wait_for(
+                    queue.get(), timeout=interval_seconds
+                )
+            except TimeoutError:
+                yield _sse("heartbeat", {"phase": phase})
+                continue
+            if kind == "done":
+                return
+            if kind == "error":
+                assert isinstance(payload, Exception)
+                raise payload
+            assert isinstance(payload, str)
+            if payload.startswith("event: chunk\n"):
+                phase = "writing"
+            yield payload
+    finally:
+        if not producer.done():
+            producer.cancel()
+        try:
+            await producer
+        except asyncio.CancelledError:
+            pass
+
+
 @router.get("/session", response_model=SessionResponse)
 def get_session(
     request: Request, response: Response, db: Session = Depends(get_db)
@@ -469,14 +513,16 @@ def stream_message(
                     {"message": _message_response(replay).model_dump(mode="json"), "replay": True},
                 )
                 return
-        async for event in _generate_reply(
+        source = _generate_reply(
             db=db,
             identity=identity,
             conversation=conversation,
             persona=persona,
             pack=pack,
             payload=payload,
-        ):
+            existing_user_message=existing,
+        )
+        async for event in _stream_with_heartbeats(source):
             yield event
 
     response = StreamingResponse(
@@ -496,17 +542,21 @@ async def _generate_reply(
     persona: Persona,
     pack: PersonaPack,
     payload: ChatMessageCreate,
+    existing_user_message: Message | None = None,
 ) -> AsyncIterator[str]:
     turn_started = monotonic()
-    user_message = Message(
-        conversation_id=conversation.id,
-        role="user",
-        content=payload.content.strip(),
-        stage=conversation.stage,
-        idempotency_key=payload.idempotency_key,
-    )
-    db.add(user_message)
-    db.flush()
+    if existing_user_message is None:
+        user_message = Message(
+            conversation_id=conversation.id,
+            role="user",
+            content=payload.content.strip(),
+            stage=conversation.stage,
+            idempotency_key=payload.idempotency_key,
+        )
+        db.add(user_message)
+        db.flush()
+    else:
+        user_message = existing_user_message
     assessment = assess_safety(user_message.content)
     if conversation.stage == DialogueStage.SAFETY and confirms_immediate_danger(
         user_message.content
