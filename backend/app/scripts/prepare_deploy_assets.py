@@ -1,6 +1,8 @@
 import secrets
 import shutil
 import sqlite3
+import subprocess
+import sys
 from pathlib import Path
 
 import yaml
@@ -81,6 +83,32 @@ def _create_vefaas_bundle() -> None:
         BUNDLE_ROOT / "requirements.txt",
     )
 
+    # veFaaS does not always attach the remote dependency task output to the
+    # released revision. Build a Linux CPython 3.12 vendor tree locally so the
+    # uploaded package is self-contained even when deployment runs from macOS.
+    subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pip",
+            "install",
+            "--disable-pip-version-check",
+            "--no-compile",
+            "--target",
+            str(BUNDLE_ROOT / "_vendor"),
+            "--platform",
+            "manylinux2014_x86_64",
+            "--python-version",
+            "3.12",
+            "--implementation",
+            "cp",
+            "--only-binary=:all:",
+            "-r",
+            str(BACKEND_ROOT / "requirements.production.txt"),
+        ],
+        check=True,
+    )
+
     (BUNDLE_ROOT / ".vefaasignore").write_text(
         "\n".join(
             (
@@ -100,9 +128,7 @@ def _create_vefaas_bundle() -> None:
 def main() -> None:
     _copy_runtime_assets()
     target_path = _create_sanitized_bootstrap()
-    (ASSET_ROOT / "deployment-generation.txt").write_text(
-        secrets.token_hex(12), encoding="utf-8"
-    )
+    (ASSET_ROOT / "deployment-generation.txt").write_text(secrets.token_hex(12), encoding="utf-8")
     _create_vefaas_bundle()
     print(f"Prepared deploy assets: {ASSET_ROOT}")
     print(f"Bootstrap database: {target_path.stat().st_size / 1024 / 1024:.1f} MiB")
