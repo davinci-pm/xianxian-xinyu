@@ -18,38 +18,36 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
-    with op.batch_alter_table("personas", schema=None) as batch_op:
-        batch_op.add_column(sa.Column("owner_user_id", sa.String(length=32), nullable=True))
-        batch_op.add_column(
-            sa.Column(
-                "origin_type",
-                sa.String(length=32),
-                server_default="curated",
-                nullable=False,
-            )
-        )
-        batch_op.add_column(
-            sa.Column(
-                "visibility",
-                sa.String(length=24),
-                server_default="public",
-                nullable=False,
-            )
-        )
-        batch_op.add_column(sa.Column("current_version_id", sa.String(length=32), nullable=True))
-        batch_op.create_foreign_key(
-            "fk_personas_owner_user_id_users",
-            "users",
-            ["owner_user_id"],
-            ["id"],
-            ondelete="SET NULL",
-        )
-        batch_op.create_index("idx_personas_owner_user_id", ["owner_user_id"], unique=False)
-        batch_op.create_index("idx_personas_origin_type", ["origin_type"], unique=False)
-        batch_op.create_index("idx_personas_visibility", ["visibility"], unique=False)
-        batch_op.create_index(
-            "idx_personas_current_version_id", ["current_version_id"], unique=False
-        )
+    # These existing tables can be large in production. SQLite batch mode would
+    # rebuild each table just to add nullable columns, which can exceed the
+    # serverless startup deadline. The application validates these references,
+    # while new Studio tables below retain database-level foreign keys.
+    op.add_column("personas", sa.Column("owner_user_id", sa.String(length=32), nullable=True))
+    op.add_column(
+        "personas",
+        sa.Column(
+            "origin_type",
+            sa.String(length=32),
+            server_default="curated",
+            nullable=False,
+        ),
+    )
+    op.add_column(
+        "personas",
+        sa.Column(
+            "visibility",
+            sa.String(length=24),
+            server_default="public",
+            nullable=False,
+        ),
+    )
+    op.add_column(
+        "personas", sa.Column("current_version_id", sa.String(length=32), nullable=True)
+    )
+    op.create_index("idx_personas_owner_user_id", "personas", ["owner_user_id"])
+    op.create_index("idx_personas_origin_type", "personas", ["origin_type"])
+    op.create_index("idx_personas_visibility", "personas", ["visibility"])
+    op.create_index("idx_personas_current_version_id", "personas", ["current_version_id"])
 
     op.create_table(
         "persona_projects",
@@ -158,38 +156,32 @@ def upgrade() -> None:
     op.create_index("idx_distillation_jobs_project_id", "distillation_jobs", ["project_id"])
     op.create_index("idx_distillation_jobs_status", "distillation_jobs", ["status"])
 
-    with op.batch_alter_table("conversations", schema=None) as batch_op:
-        batch_op.add_column(sa.Column("persona_version_id", sa.String(length=32), nullable=True))
-        batch_op.create_foreign_key(
-            "fk_conversations_persona_version_id",
-            "persona_versions",
-            ["persona_version_id"],
-            ["id"],
-            ondelete="SET NULL",
-        )
-        batch_op.create_index("idx_conversations_persona_version_id", ["persona_version_id"])
+    op.add_column(
+        "conversations", sa.Column("persona_version_id", sa.String(length=32), nullable=True)
+    )
+    op.create_index(
+        "idx_conversations_persona_version_id", "conversations", ["persona_version_id"]
+    )
 
-    with op.batch_alter_table("knowledge_documents", schema=None) as batch_op:
-        batch_op.add_column(sa.Column("persona_version_id", sa.String(length=32), nullable=True))
-        batch_op.create_foreign_key(
-            "fk_knowledge_documents_persona_version_id",
-            "persona_versions",
-            ["persona_version_id"],
-            ["id"],
-            ondelete="CASCADE",
-        )
-        batch_op.create_index("idx_knowledge_documents_persona_version_id", ["persona_version_id"])
+    op.add_column(
+        "knowledge_documents",
+        sa.Column("persona_version_id", sa.String(length=32), nullable=True),
+    )
+    op.create_index(
+        "idx_knowledge_documents_persona_version_id",
+        "knowledge_documents",
+        ["persona_version_id"],
+    )
 
-    with op.batch_alter_table("knowledge_chunks", schema=None) as batch_op:
-        batch_op.add_column(sa.Column("persona_version_id", sa.String(length=32), nullable=True))
-        batch_op.create_foreign_key(
-            "fk_knowledge_chunks_persona_version_id",
-            "persona_versions",
-            ["persona_version_id"],
-            ["id"],
-            ondelete="CASCADE",
-        )
-        batch_op.create_index("idx_knowledge_chunks_persona_version_id", ["persona_version_id"])
+    op.add_column(
+        "knowledge_chunks",
+        sa.Column("persona_version_id", sa.String(length=32), nullable=True),
+    )
+    op.create_index(
+        "idx_knowledge_chunks_persona_version_id",
+        "knowledge_chunks",
+        ["persona_version_id"],
+    )
 
     op.execute("PRAGMA optimize")
 
@@ -197,17 +189,14 @@ def upgrade() -> None:
 def downgrade() -> None:
     with op.batch_alter_table("knowledge_chunks", schema=None) as batch_op:
         batch_op.drop_index("idx_knowledge_chunks_persona_version_id")
-        batch_op.drop_constraint("fk_knowledge_chunks_persona_version_id", type_="foreignkey")
         batch_op.drop_column("persona_version_id")
 
     with op.batch_alter_table("knowledge_documents", schema=None) as batch_op:
         batch_op.drop_index("idx_knowledge_documents_persona_version_id")
-        batch_op.drop_constraint("fk_knowledge_documents_persona_version_id", type_="foreignkey")
         batch_op.drop_column("persona_version_id")
 
     with op.batch_alter_table("conversations", schema=None) as batch_op:
         batch_op.drop_index("idx_conversations_persona_version_id")
-        batch_op.drop_constraint("fk_conversations_persona_version_id", type_="foreignkey")
         batch_op.drop_column("persona_version_id")
 
     op.drop_index("idx_distillation_jobs_status", table_name="distillation_jobs")
@@ -232,7 +221,6 @@ def downgrade() -> None:
         batch_op.drop_index("idx_personas_visibility")
         batch_op.drop_index("idx_personas_origin_type")
         batch_op.drop_index("idx_personas_owner_user_id")
-        batch_op.drop_constraint("fk_personas_owner_user_id_users", type_="foreignkey")
         batch_op.drop_column("current_version_id")
         batch_op.drop_column("visibility")
         batch_op.drop_column("origin_type")
