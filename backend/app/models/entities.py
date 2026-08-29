@@ -68,6 +68,12 @@ class Persona(Base, TimestampMixin):
     status: Mapped[str] = mapped_column(String(24), default="active")
     is_living: Mapped[bool] = mapped_column(Boolean, default=False)
     pack_version: Mapped[str] = mapped_column(String(32), default="1.0.0")
+    owner_user_id: Mapped[str | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), index=True
+    )
+    origin_type: Mapped[str] = mapped_column(String(32), default="curated", index=True)
+    visibility: Mapped[str] = mapped_column(String(24), default="public", index=True)
+    current_version_id: Mapped[str | None] = mapped_column(String(32), index=True)
 
 
 class Conversation(Base, TimestampMixin):
@@ -79,6 +85,9 @@ class Conversation(Base, TimestampMixin):
     )
     user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
     persona_id: Mapped[str] = mapped_column(ForeignKey("personas.id"), index=True)
+    persona_version_id: Mapped[str | None] = mapped_column(
+        ForeignKey("persona_versions.id", ondelete="SET NULL"), index=True
+    )
     title: Mapped[str] = mapped_column(String(160), default="一场未命名的对话")
     stage: Mapped[str] = mapped_column(String(40), default="BREAK_ICE")
     status: Mapped[str] = mapped_column(String(24), default="active")
@@ -136,6 +145,9 @@ class KnowledgeDocument(Base, TimestampMixin):
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
     persona_id: Mapped[str] = mapped_column(ForeignKey("personas.id"), index=True)
+    persona_version_id: Mapped[str | None] = mapped_column(
+        ForeignKey("persona_versions.id", ondelete="CASCADE"), index=True
+    )
     title: Mapped[str] = mapped_column(String(240))
     source_type: Mapped[str] = mapped_column(String(40), default="public_domain")
     source_url: Mapped[str | None] = mapped_column(Text)
@@ -158,6 +170,9 @@ class KnowledgeChunk(Base, TimestampMixin):
     )
     persona_id: Mapped[str] = mapped_column(
         ForeignKey("personas.id", ondelete="CASCADE"), index=True
+    )
+    persona_version_id: Mapped[str | None] = mapped_column(
+        ForeignKey("persona_versions.id", ondelete="CASCADE"), index=True
     )
     chunk_index: Mapped[int] = mapped_column(Integer)
     heading: Mapped[str | None] = mapped_column(String(240))
@@ -218,3 +233,93 @@ class SafetyEvent(Base, TimestampMixin):
     matched_rule: Mapped[str] = mapped_column(String(120))
     action: Mapped[str] = mapped_column(String(80))
     redacted_excerpt: Mapped[str] = mapped_column(String(160))
+
+
+class PersonaProject(Base, TimestampMixin):
+    __tablename__ = "persona_projects"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    owner_user_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    persona_id: Mapped[str | None] = mapped_column(
+        ForeignKey("personas.id", ondelete="SET NULL"), index=True
+    )
+    name: Mapped[str] = mapped_column(String(80))
+    target_type: Mapped[str] = mapped_column(String(32))
+    relationship: Mapped[str] = mapped_column(String(80), default="")
+    purpose: Mapped[str] = mapped_column(Text)
+    language: Mapped[str] = mapped_column(String(16), default="zh-CN")
+    visibility: Mapped[str] = mapped_column(String(24), default="private")
+    status: Mapped[str] = mapped_column(String(24), default="draft", index=True)
+    calibration_json: Mapped[str] = mapped_column(Text, default="{}")
+    source_char_count: Mapped[int] = mapped_column(Integer, default=0)
+    quality_score: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class PersonaSourceFile(Base, TimestampMixin):
+    __tablename__ = "persona_source_files"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    project_id: Mapped[str] = mapped_column(
+        ForeignKey("persona_projects.id", ondelete="CASCADE"), index=True
+    )
+    filename: Mapped[str] = mapped_column(String(240))
+    source_type: Mapped[str] = mapped_column(String(40), default="text")
+    mime_type: Mapped[str] = mapped_column(String(120), default="text/plain")
+    content: Mapped[str] = mapped_column(Text)
+    char_count: Mapped[int] = mapped_column(Integer)
+    content_hash: Mapped[str] = mapped_column(String(64), index=True)
+    target_speaker: Mapped[str | None] = mapped_column(String(80))
+    time_range: Mapped[str | None] = mapped_column(String(120))
+    rights_confirmed: Mapped[bool] = mapped_column(Boolean, default=False)
+    status: Mapped[str] = mapped_column(String(24), default="ready")
+
+
+class PersonaClaim(Base, TimestampMixin):
+    __tablename__ = "persona_claims"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    project_id: Mapped[str] = mapped_column(
+        ForeignKey("persona_projects.id", ondelete="CASCADE"), index=True
+    )
+    claim_type: Mapped[str] = mapped_column(String(32))
+    content: Mapped[str] = mapped_column(Text)
+    confidence: Mapped[int] = mapped_column(Integer, default=60)
+    review_status: Mapped[str] = mapped_column(String(24), default="suggested")
+    evidence_json: Mapped[str] = mapped_column(Text, default="[]")
+
+
+class PersonaVersion(Base, TimestampMixin):
+    __tablename__ = "persona_versions"
+    __table_args__ = (UniqueConstraint("persona_id", "version", name="uq_persona_version_number"),)
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    persona_id: Mapped[str] = mapped_column(
+        ForeignKey("personas.id", ondelete="CASCADE"), index=True
+    )
+    project_id: Mapped[str | None] = mapped_column(
+        ForeignKey("persona_projects.id", ondelete="SET NULL"), index=True
+    )
+    version: Mapped[str] = mapped_column(String(32))
+    status: Mapped[str] = mapped_column(String(24), default="draft", index=True)
+    snapshot_json: Mapped[str] = mapped_column(Text)
+    quality_score: Mapped[int] = mapped_column(Integer, default=0)
+    created_by_user_id: Mapped[str | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL")
+    )
+    activated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class DistillationJob(Base, TimestampMixin):
+    __tablename__ = "distillation_jobs"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=new_id)
+    project_id: Mapped[str] = mapped_column(
+        ForeignKey("persona_projects.id", ondelete="CASCADE"), index=True
+    )
+    stage: Mapped[str] = mapped_column(String(32), default="queued")
+    status: Mapped[str] = mapped_column(String(24), default="queued", index=True)
+    progress: Mapped[int] = mapped_column(Integer, default=0)
+    pipeline_version: Mapped[str] = mapped_column(String(40), default="nuwa-internal-v1")
+    error_message: Mapped[str | None] = mapped_column(Text)

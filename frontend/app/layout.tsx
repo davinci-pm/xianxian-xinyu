@@ -26,6 +26,8 @@ export default function RootLayout({ children }: Readonly<{ children: ReactNode 
             <nav aria-label="页脚导航">
               <Link href="/paths">思想路径</Link>
               <Link href="/notes">心语札记</Link>
+              <Link href="/me">我的数字人</Link>
+              <Link href="/studio">女娲工坊</Link>
               <Link href="/settings/memory">记忆设置</Link>
             </nav>
             <p>本产品不是心理治疗、医疗、法律或投资建议工具。</p>

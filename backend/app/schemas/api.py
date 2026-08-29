@@ -140,3 +140,93 @@ class SkillResponse(ApiModel):
     permissions: list[str]
     allowlisted: bool
     enabled: bool
+
+
+PersonaTargetType = Literal[
+    "self",
+    "authorized_private",
+    "public_figure",
+    "deceased",
+    "composite",
+    "fictional",
+]
+
+
+class StudioProjectCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+    target_type: PersonaTargetType
+    relationship: str = Field(default="", max_length=80)
+    purpose: str = Field(min_length=8, max_length=1000)
+    language: str = Field(default="zh-CN", min_length=2, max_length=16)
+
+
+class StudioSourceCreate(BaseModel):
+    filename: str = Field(min_length=1, max_length=240)
+    source_type: Literal["chat", "writing", "timeline", "interview", "text"] = "text"
+    mime_type: str = Field(default="text/plain", max_length=120)
+    content: str = Field(min_length=20, max_length=500_000)
+    target_speaker: str | None = Field(default=None, max_length=80)
+    time_range: str | None = Field(default=None, max_length=120)
+    rights_confirmed: bool
+
+
+class StudioCalibration(BaseModel):
+    core_values: str = Field(default="", max_length=2000)
+    decision_case: str = Field(default="", max_length=3000)
+    never_do: str = Field(default="", max_length=2000)
+    unlike_response: str = Field(default="", max_length=2000)
+
+
+class StudioSourceResponse(ApiModel):
+    id: str
+    filename: str
+    source_type: str
+    mime_type: str
+    char_count: int
+    target_speaker: str | None
+    time_range: str | None
+    rights_confirmed: bool
+    status: str
+    created_at: datetime
+
+
+class StudioClaimResponse(ApiModel):
+    id: str
+    claim_type: str
+    content: str
+    confidence: int
+    review_status: str
+    evidence_count: int
+
+
+class StudioProjectResponse(ApiModel):
+    id: str
+    name: str
+    target_type: str
+    relationship: str
+    purpose: str
+    language: str
+    visibility: str
+    status: str
+    source_char_count: int
+    quality_score: int
+    persona_slug: str | None = None
+    sources: list[StudioSourceResponse] = Field(default_factory=list)
+    claims: list[StudioClaimResponse] = Field(default_factory=list)
+    created_at: datetime
+    updated_at: datetime
+
+
+class StudioDistillationResponse(ApiModel):
+    project: StudioProjectResponse
+    persona: PersonaCard
+    version: str
+    job_id: str
+    quality_score: int
+
+
+class OwnedPersonaResponse(PersonaCard):
+    version: str
+    quality_score: int
+    visibility: str
+    project_id: str | None = None

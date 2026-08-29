@@ -113,3 +113,66 @@ export interface SkillInfo {
   allowlisted: boolean;
   enabled: boolean;
 }
+
+export type PersonaTargetType =
+  | "self"
+  | "authorized_private"
+  | "public_figure"
+  | "deceased"
+  | "composite"
+  | "fictional";
+
+export interface StudioSource {
+  id: string;
+  filename: string;
+  source_type: string;
+  mime_type: string;
+  char_count: number;
+  target_speaker: string | null;
+  time_range: string | null;
+  rights_confirmed: boolean;
+  status: string;
+  created_at: string;
+}
+
+export interface StudioClaim {
+  id: string;
+  claim_type: string;
+  content: string;
+  confidence: number;
+  review_status: string;
+  evidence_count: number;
+}
+
+export interface StudioProject {
+  id: string;
+  name: string;
+  target_type: PersonaTargetType;
+  relationship: string;
+  purpose: string;
+  language: string;
+  visibility: string;
+  status: string;
+  source_char_count: number;
+  quality_score: number;
+  persona_slug: string | null;
+  sources: StudioSource[];
+  claims: StudioClaim[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface StudioDistillationResult {
+  project: StudioProject;
+  persona: PersonaCard;
+  version: string;
+  job_id: string;
+  quality_score: number;
+}
+
+export interface OwnedPersona extends PersonaCard {
+  version: string;
+  quality_score: number;
+  visibility: string;
+  project_id: string | null;
+}

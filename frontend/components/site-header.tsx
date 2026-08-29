@@ -9,6 +9,7 @@ const links = [
   { href: "/", label: "人物发现" },
   { href: "/paths", label: "思想路径" },
   { href: "/notes", label: "心语札记" },
+  { href: "/me", label: "我的数字人" },
 ];
 
 export default function SiteHeader() {
@@ -37,6 +38,7 @@ export default function SiteHeader() {
       {open && (
         <nav className="mobile-nav" aria-label="移动端主导航">
           {links.map((link) => <Link href={link.href} key={link.href} onClick={() => setOpen(false)}>{link.label}</Link>)}
+          <Link href="/studio" onClick={() => setOpen(false)}><SparkIcon size={18} /> 女娲工坊</Link>
           <Link href="/settings/memory" onClick={() => setOpen(false)}><MemoryIcon size={18} /> 记忆设置</Link>
           <span><BookIcon size={18} /> 基于公开资料构建的 AI 思想人格</span>
         </nav>
@@ -44,4 +46,3 @@ export default function SiteHeader() {
     </header>
   );
 }
-

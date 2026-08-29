@@ -4,11 +4,15 @@ import type {
   ConversationDetail,
   ConversationSummary,
   MemoryItem,
+  OwnedPersona,
   PersonaCard,
   PersonaDetail,
   StreamEvent,
   SessionInfo,
   SkillInfo,
+  StudioDistillationResult,
+  StudioProject,
+  StudioSource,
 } from "@/lib/types";
 
 const BASE = "/api/backend";
@@ -19,7 +23,10 @@ async function jsonRequest<T>(path: string, init?: RequestInit): Promise<T> {
     headers: { "Content-Type": "application/json", ...init?.headers },
     credentials: "same-origin",
   });
-  if (!response.ok) throw new Error(`API ${response.status}`);
+  if (!response.ok) {
+    const payload = await response.json().catch(() => null) as { detail?: string } | null;
+    throw new Error(payload?.detail ?? `API ${response.status}`);
+  }
   if (response.status === 204) return undefined as T;
   return (await response.json()) as T;
 }
@@ -55,6 +62,39 @@ export const api = {
   deleteMemory: (id: string) =>
     jsonRequest<void>(`/memories/${id}`, { method: "DELETE" }),
   skills: () => jsonRequest<SkillInfo[]>("/skills"),
+  studioProjects: () => jsonRequest<StudioProject[]>("/studio/projects"),
+  createStudioProject: (payload: {
+    name: string;
+    target_type: string;
+    relationship: string;
+    purpose: string;
+    language: string;
+  }) => jsonRequest<StudioProject>("/studio/projects", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  }),
+  addStudioSource: (projectId: string, payload: {
+    filename: string;
+    source_type: string;
+    mime_type: string;
+    content: string;
+    target_speaker: string | null;
+    time_range: string | null;
+    rights_confirmed: boolean;
+  }) => jsonRequest<StudioSource>(`/studio/projects/${projectId}/sources`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  }),
+  distillStudioProject: (projectId: string, payload: {
+    core_values: string;
+    decision_case: string;
+    never_do: string;
+    unlike_response: string;
+  }) => jsonRequest<StudioDistillationResult>(`/studio/projects/${projectId}/distill`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  }),
+  ownedPersonas: () => jsonRequest<OwnedPersona[]>("/me/personas"),
   async *sendMessage(
     conversationId: string,
     content: string,

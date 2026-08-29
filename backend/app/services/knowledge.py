@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from threading import RLock
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
@@ -66,7 +66,7 @@ class _IndexedChunk:
     content: str
 
 
-_INDEX_CACHE: OrderedDict[tuple[str, str], _KnowledgeIndex] = OrderedDict()
+_INDEX_CACHE: OrderedDict[tuple[str, str, str], _KnowledgeIndex] = OrderedDict()
 _INDEX_CACHE_LOCK = RLock()
 
 
@@ -82,23 +82,34 @@ def _tokenize(text: str) -> tuple[str, ...]:
     return tuple(short_phrases + bigrams + latin)
 
 
-def _index_fingerprint(db: Session, persona_id: str) -> tuple[Any, ...]:
+def _version_filter(column: Any, version_id: str | None) -> Any:
+    return True if version_id is None else or_(column == version_id, column.is_(None))
+
+
+def _index_fingerprint(db: Session, persona_id: str, version_id: str | None) -> tuple[Any, ...]:
     chunk_count, chunk_updated = db.execute(
         select(func.count(), func.max(KnowledgeChunk.updated_at)).where(
             KnowledgeChunk.persona_id == persona_id,
+            _version_filter(KnowledgeChunk.persona_version_id, version_id),
             KnowledgeChunk.enabled.is_(True),
         )
     ).one()
     document_count, document_updated = db.execute(
         select(func.count(), func.max(KnowledgeDocument.updated_at)).where(
             KnowledgeDocument.persona_id == persona_id,
+            _version_filter(KnowledgeDocument.persona_version_id, version_id),
             KnowledgeDocument.enabled.is_(True),
         )
     ).one()
     return chunk_count, chunk_updated, document_count, document_updated
 
 
-def _build_index(db: Session, persona_id: str, fingerprint: tuple[Any, ...]) -> _KnowledgeIndex:
+def _build_index(
+    db: Session,
+    persona_id: str,
+    version_id: str | None,
+    fingerprint: tuple[Any, ...],
+) -> _KnowledgeIndex:
     chunk_rows = db.execute(
         select(
             KnowledgeChunk.id,
@@ -110,6 +121,7 @@ def _build_index(db: Session, persona_id: str, fingerprint: tuple[Any, ...]) -> 
             KnowledgeChunk.embedding_blob,
         ).where(
             KnowledgeChunk.persona_id == persona_id,
+            _version_filter(KnowledgeChunk.persona_version_id, version_id),
             KnowledgeChunk.enabled.is_(True),
         )
     ).all()
@@ -141,6 +153,7 @@ def _build_index(db: Session, persona_id: str, fingerprint: tuple[Any, ...]) -> 
                 KnowledgeDocument.content,
             ).where(
                 KnowledgeDocument.persona_id == persona_id,
+                _version_filter(KnowledgeDocument.persona_version_id, version_id),
                 KnowledgeDocument.enabled.is_(True),
             )
         )
@@ -196,9 +209,9 @@ def _build_index(db: Session, persona_id: str, fingerprint: tuple[Any, ...]) -> 
     )
 
 
-def _get_index(db: Session, persona_id: str) -> _KnowledgeIndex:
-    cache_key = (str(db.get_bind().engine.url), persona_id)
-    fingerprint = _index_fingerprint(db, persona_id)
+def _get_index(db: Session, persona_id: str, version_id: str | None = None) -> _KnowledgeIndex:
+    cache_key = (str(db.get_bind().engine.url), persona_id, version_id or "current")
+    fingerprint = _index_fingerprint(db, persona_id, version_id)
     with _INDEX_CACHE_LOCK:
         cached = _INDEX_CACHE.get(cache_key)
         if cached is not None and cached.fingerprint == fingerprint:
@@ -210,7 +223,7 @@ def _get_index(db: Session, persona_id: str) -> _KnowledgeIndex:
         max_personas = max(get_settings().rag_index_cache_personas, 1)
         while len(_INDEX_CACHE) >= max_personas:
             _INDEX_CACHE.popitem(last=False)
-    index = _build_index(db, persona_id, fingerprint)
+    index = _build_index(db, persona_id, version_id, fingerprint)
     with _INDEX_CACHE_LOCK:
         _INDEX_CACHE[cache_key] = index
         _INDEX_CACHE.move_to_end(cache_key)
@@ -281,11 +294,16 @@ def _legacy_retrieval(
 
 
 def retrieve_knowledge(
-    db: Session, persona_id: str, query: str, limit: int | None = None
+    db: Session,
+    persona_id: str,
+    query: str,
+    limit: int | None = None,
+    *,
+    version_id: str | None = None,
 ) -> list[KnowledgeHit]:
     settings = get_settings()
     final_limit = limit or settings.rag_final_limit
-    index = _get_index(db, persona_id)
+    index = _get_index(db, persona_id, version_id)
     if not index.chunks:
         return _legacy_retrieval(list(index.documents.values()), query, final_limit)
 

@@ -1,8 +1,10 @@
 import asyncio
+import hashlib
 import json
 import re
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
+from pathlib import Path
 from time import monotonic
 from typing import Any
 
@@ -22,6 +24,10 @@ from app.models import (
     Memory,
     Message,
     Persona,
+    PersonaClaim,
+    PersonaProject,
+    PersonaSourceFile,
+    PersonaVersion,
     SafetyEvent,
     SkillConfig,
 )
@@ -37,11 +43,19 @@ from app.schemas.api import (
     MemoryResponse,
     MemoryUpdateRequest,
     MessageResponse,
+    OwnedPersonaResponse,
     PersonaCard,
     PersonaDetail,
     SessionResponse,
     SkillResponse,
     SourceItem,
+    StudioCalibration,
+    StudioClaimResponse,
+    StudioDistillationResponse,
+    StudioProjectCreate,
+    StudioProjectResponse,
+    StudioSourceCreate,
+    StudioSourceResponse,
 )
 from app.services.auth import (
     attach_visitor_to_user,
@@ -56,7 +70,9 @@ from app.services.llm.base import GenerationContext
 from app.services.llm.factory import get_model_provider
 from app.services.llm.openai_compatible import EmptyModelContentError
 from app.services.memory import confirm_memory, create_memory_candidate, list_confirmed_memories
-from app.services.persona_loader import PersonaPack, load_persona_pack
+from app.services.persona_distillation import DistillationInputError, distill_project
+from app.services.persona_loader import PersonaPack
+from app.services.persona_runtime import load_runtime_persona_pack
 from app.services.safety import (
     SafetyAssessment,
     assess_safety,
@@ -201,6 +217,81 @@ def _owned_memory(db: Session, memory_id: str, identity: VisitorIdentity) -> Mem
     if memory is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="未找到该记忆")
     return memory
+
+
+def _owned_project(db: Session, project_id: str, identity: VisitorIdentity) -> PersonaProject:
+    if identity.user is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="请先登录")
+    project = db.scalar(
+        select(PersonaProject).where(
+            PersonaProject.id == project_id,
+            PersonaProject.owner_user_id == identity.user.id,
+        )
+    )
+    if project is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="未找到该人物草稿")
+    return project
+
+
+def _require_persona_access(persona: Persona, identity: VisitorIdentity) -> None:
+    if persona.origin_type != "user_created" or persona.visibility == "public":
+        return
+    if identity.user is None or persona.owner_user_id != identity.user.id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="未找到该人物")
+
+
+def _studio_source_response(source: PersonaSourceFile) -> StudioSourceResponse:
+    return StudioSourceResponse.model_validate(source)
+
+
+def _studio_claim_response(claim: PersonaClaim) -> StudioClaimResponse:
+    try:
+        evidence = json.loads(claim.evidence_json)
+    except json.JSONDecodeError:
+        evidence = []
+    return StudioClaimResponse(
+        id=claim.id,
+        claim_type=claim.claim_type,
+        content=claim.content,
+        confidence=claim.confidence,
+        review_status=claim.review_status,
+        evidence_count=len(evidence) if isinstance(evidence, list) else 0,
+    )
+
+
+def _studio_project_response(db: Session, project: PersonaProject) -> StudioProjectResponse:
+    sources = list(
+        db.scalars(
+            select(PersonaSourceFile)
+            .where(PersonaSourceFile.project_id == project.id)
+            .order_by(PersonaSourceFile.created_at, PersonaSourceFile.id)
+        )
+    )
+    claims = list(
+        db.scalars(
+            select(PersonaClaim)
+            .where(PersonaClaim.project_id == project.id)
+            .order_by(PersonaClaim.created_at, PersonaClaim.id)
+        )
+    )
+    persona = db.get(Persona, project.persona_id) if project.persona_id else None
+    return StudioProjectResponse(
+        id=project.id,
+        name=project.name,
+        target_type=project.target_type,
+        relationship=project.relationship,
+        purpose=project.purpose,
+        language=project.language,
+        visibility=project.visibility,
+        status=project.status,
+        source_char_count=project.source_char_count,
+        quality_score=project.quality_score,
+        persona_slug=persona.slug if persona else None,
+        sources=[_studio_source_response(source) for source in sources],
+        claims=[_studio_claim_response(claim) for claim in claims],
+        created_at=project.created_at,
+        updated_at=project.updated_at,
+    )
 
 
 def _sse(event: str, data: dict[str, Any]) -> str:
@@ -353,26 +444,216 @@ def logout(response: Response) -> Response:
     return response
 
 
+@router.get("/studio/projects", response_model=list[StudioProjectResponse])
+def list_studio_projects(
+    request: Request, db: Session = Depends(get_db)
+) -> list[StudioProjectResponse]:
+    identity = resolve_visitor(request, db, require_auth=True)
+    assert identity.user is not None
+    projects = list(
+        db.scalars(
+            select(PersonaProject)
+            .where(PersonaProject.owner_user_id == identity.user.id)
+            .order_by(PersonaProject.updated_at.desc())
+        )
+    )
+    return [_studio_project_response(db, project) for project in projects]
+
+
+@router.post(
+    "/studio/projects",
+    response_model=StudioProjectResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_studio_project(
+    payload: StudioProjectCreate,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> StudioProjectResponse:
+    identity = resolve_visitor(request, db, require_auth=True)
+    assert identity.user is not None
+    rate_limiter.check(f"studio-project:{identity.user.id}")
+    project = PersonaProject(
+        owner_user_id=identity.user.id,
+        name=payload.name.strip(),
+        target_type=payload.target_type,
+        relationship=payload.relationship.strip(),
+        purpose=payload.purpose.strip(),
+        language=payload.language,
+        visibility="private",
+        status="draft",
+    )
+    db.add(project)
+    db.commit()
+    db.refresh(project)
+    return _studio_project_response(db, project)
+
+
+@router.get("/studio/projects/{project_id}", response_model=StudioProjectResponse)
+def get_studio_project(
+    project_id: str,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> StudioProjectResponse:
+    identity = resolve_visitor(request, db, require_auth=True)
+    project = _owned_project(db, project_id, identity)
+    return _studio_project_response(db, project)
+
+
+@router.post(
+    "/studio/projects/{project_id}/sources",
+    response_model=StudioSourceResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def add_studio_source(
+    project_id: str,
+    payload: StudioSourceCreate,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> StudioSourceResponse:
+    identity = resolve_visitor(request, db, require_auth=True)
+    project = _owned_project(db, project_id, identity)
+    assert identity.user is not None
+    rate_limiter.check(f"studio-source:{identity.user.id}")
+    filename = payload.filename.strip()
+    if Path(filename).name != filename or any(ord(char) < 32 for char in filename):
+        raise HTTPException(status_code=422, detail="资料文件名不合法")
+    if Path(filename).suffix.lower() not in {".txt", ".md", ".csv", ".json", ".jsonl"}:
+        raise HTTPException(
+            status_code=415,
+            detail="内测版仅支持 TXT、Markdown、CSV、JSON 和 JSONL",
+        )
+    if not payload.rights_confirmed:
+        raise HTTPException(status_code=422, detail="请先确认你有权使用这份资料")
+    content = payload.content.replace("\x00", "").strip()
+    content_hash = hashlib.sha256(content.encode()).hexdigest()
+    duplicate = db.scalar(
+        select(PersonaSourceFile).where(
+            PersonaSourceFile.project_id == project.id,
+            PersonaSourceFile.content_hash == content_hash,
+        )
+    )
+    if duplicate is not None:
+        raise HTTPException(status_code=409, detail="这份资料已经上传过了")
+    source = PersonaSourceFile(
+        project_id=project.id,
+        filename=filename,
+        source_type=payload.source_type,
+        mime_type=payload.mime_type,
+        content=content,
+        char_count=len(content),
+        content_hash=content_hash,
+        target_speaker=payload.target_speaker.strip() if payload.target_speaker else None,
+        time_range=payload.time_range.strip() if payload.time_range else None,
+        rights_confirmed=True,
+        status="ready",
+    )
+    db.add(source)
+    project.status = "sources_ready"
+    project.source_char_count += len(content)
+    db.commit()
+    db.refresh(source)
+    return _studio_source_response(source)
+
+
+@router.post(
+    "/studio/projects/{project_id}/distill",
+    response_model=StudioDistillationResponse,
+)
+def run_studio_distillation(
+    project_id: str,
+    payload: StudioCalibration,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> StudioDistillationResponse:
+    identity = resolve_visitor(request, db, require_auth=True)
+    project = _owned_project(db, project_id, identity)
+    assert identity.user is not None
+    rate_limiter.check(f"studio-distill:{identity.user.id}")
+    try:
+        persona, version, job = distill_project(
+            db,
+            project,
+            owner_user_id=identity.user.id,
+            calibration=payload.model_dump(),
+        )
+        db.commit()
+    except DistillationInputError as exc:
+        db.rollback()
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    db.refresh(project)
+    return StudioDistillationResponse(
+        project=_studio_project_response(db, project),
+        persona=_persona_card(persona),
+        version=version.version,
+        job_id=job.id,
+        quality_score=version.quality_score,
+    )
+
+
+@router.get("/me/personas", response_model=list[OwnedPersonaResponse])
+def list_owned_personas(
+    request: Request, db: Session = Depends(get_db)
+) -> list[OwnedPersonaResponse]:
+    identity = resolve_visitor(request, db, require_auth=True)
+    assert identity.user is not None
+    personas = list(
+        db.scalars(
+            select(Persona)
+            .where(
+                Persona.owner_user_id == identity.user.id,
+                Persona.origin_type == "user_created",
+            )
+            .order_by(Persona.updated_at.desc())
+        )
+    )
+    result: list[OwnedPersonaResponse] = []
+    for persona in personas:
+        version = db.get(PersonaVersion, persona.current_version_id)
+        project = db.scalar(select(PersonaProject).where(PersonaProject.persona_id == persona.id))
+        result.append(
+            OwnedPersonaResponse(
+                **_persona_card(persona).model_dump(),
+                version=version.version if version else persona.pack_version,
+                quality_score=version.quality_score if version else 0,
+                visibility=persona.visibility,
+                project_id=project.id if project else None,
+            )
+        )
+    return result
+
+
 @router.get("/personas", response_model=list[PersonaCard])
 def list_personas(db: Session = Depends(get_db)) -> list[PersonaCard]:
-    personas = list(db.scalars(select(Persona).order_by(Persona.chat_tier, Persona.name_en)))
+    personas = list(
+        db.scalars(
+            select(Persona)
+            .where(Persona.origin_type == "curated")
+            .order_by(Persona.chat_tier, Persona.name_en)
+        )
+    )
     return [_persona_card(persona) for persona in personas]
 
 
 @router.get("/personas/{slug}", response_model=PersonaDetail)
-def get_persona(slug: str, db: Session = Depends(get_db)) -> PersonaDetail:
+def get_persona(slug: str, request: Request, db: Session = Depends(get_db)) -> PersonaDetail:
     persona = db.scalar(select(Persona).where(Persona.slug == slug))
     if persona is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="未找到该人物")
-    pack = load_persona_pack(slug)
+    identity = resolve_visitor(request, db, require_auth=False)
+    _require_persona_access(persona, identity)
+    pack = load_runtime_persona_pack(db, persona)
     profile = pack.profile
+    source_conditions = [
+        KnowledgeDocument.persona_id == persona.id,
+        KnowledgeDocument.enabled.is_(True),
+    ]
+    if persona.origin_type == "user_created" and persona.current_version_id:
+        source_conditions.append(KnowledgeDocument.persona_version_id == persona.current_version_id)
     stored_sources = list(
         db.scalars(
             select(KnowledgeDocument)
-            .where(
-                KnowledgeDocument.persona_id == persona.id,
-                KnowledgeDocument.enabled.is_(True),
-            )
+            .where(*source_conditions)
             .order_by(KnowledgeDocument.title)
             .limit(20)
         )
@@ -428,7 +709,8 @@ def create_conversation(
     persona = db.scalar(select(Persona).where(Persona.slug == payload.persona_slug))
     if persona is None or persona.status != "active":
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="该人物暂不可聊天")
-    pack = load_persona_pack(persona.slug)
+    _require_persona_access(persona, identity)
+    pack = load_runtime_persona_pack(db, persona)
     remembered = list_confirmed_memories(
         db,
         identity.visitor.id,
@@ -445,6 +727,7 @@ def create_conversation(
         visitor_id=identity.visitor.id,
         user_id=identity.user.id if identity.user else None,
         persona_id=persona.id,
+        persona_version_id=persona.current_version_id,
         title=f"与{persona.name_zh}的对话",
         stage=DialogueStage.IDENTIFY_PROBLEM,
     )
@@ -531,7 +814,7 @@ def stream_message(
     persona = db.get(Persona, conversation.persona_id)
     if persona is None:
         raise HTTPException(status_code=500, detail="会话人物数据缺失")
-    pack = load_persona_pack(persona.slug)
+    pack = load_runtime_persona_pack(db, persona, conversation.persona_version_id)
 
     existing = db.scalar(
         select(Message).where(
@@ -704,7 +987,16 @@ async def _generate_reply(
     )
     retrieval_started = monotonic()
     knowledge_query = _retrieval_query(user_message.content, recent_payload)
-    knowledge_hits = retrieve_knowledge(db, persona.id, knowledge_query) if knowledge_query else []
+    knowledge_hits = (
+        retrieve_knowledge(
+            db,
+            persona.id,
+            knowledge_query,
+            version_id=conversation.persona_version_id,
+        )
+        if knowledge_query
+        else []
+    )
     retrieval_ms = int((monotonic() - retrieval_started) * 1000)
     intent_result = await intent_task
     intent_payload = intent_result.analysis.model_dump(mode="json")
