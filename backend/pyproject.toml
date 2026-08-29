@@ -21,6 +21,7 @@ dependencies = [
 [project.optional-dependencies]
 rag = [
   "fastembed>=0.8,<0.9",
+  "numpy>=1.26,<3",
 ]
 dev = [
   "fastembed>=0.8,<0.9",

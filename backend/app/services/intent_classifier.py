@@ -123,9 +123,44 @@ class HeuristicIntentClassifier:
         if emotion != "neutral":
             signal_count += 1
 
-        if stage != "END" and len(text) >= 48:
+        direct_request = any(
+            marker in text
+            for marker in (
+                "怎么",
+                "该不该",
+                "要不要",
+                "为什么",
+                "问题在哪",
+                "先抓什么",
+                "怎么选",
+                "怎么做",
+            )
+        )
+        has_specific_context = len(text) >= 18 and any(
+            marker in text
+            for marker in (
+                "我",
+                "产品",
+                "工作",
+                "公司",
+                "团队",
+                "父母",
+                "家人",
+                "学习",
+                "公式",
+            )
+        )
+        if stage != "END" and (len(text) >= 48 or (direct_request and has_specific_context)):
             stage = "GUIDANCE"
-            move = "reframe"
+            move = (
+                "reflect"
+                if primary_intent == "emotional_support"
+                else "example"
+                if primary_intent == "learning"
+                else "action"
+                if primary_intent in {"career", "decision"}
+                else "reframe"
+            )
             should_ask = False
 
         memory_should_offer = False
@@ -184,26 +219,18 @@ class OpenAICompatibleIntentClassifier:
             settings.intent_llm_api_key and settings.intent_llm_base_url
         )
         self._api_key = (
-            settings.intent_llm_api_key
-            if has_dedicated_intent_model
-            else settings.llm_api_key
+            settings.intent_llm_api_key if has_dedicated_intent_model else settings.llm_api_key
         )
         base_url = (
-            settings.intent_llm_base_url
-            if has_dedicated_intent_model
-            else settings.llm_base_url
+            settings.intent_llm_base_url if has_dedicated_intent_model else settings.llm_base_url
         )
         if not self._api_key or not base_url:
             raise RuntimeError("语义分析需要独立意图模型或主模型配置")
         self._base_url = base_url.rstrip("/")
         self._model = (
-            settings.intent_llm_model
-            if has_dedicated_intent_model
-            else settings.llm_model
+            settings.intent_llm_model if has_dedicated_intent_model else settings.llm_model
         )
-        self._timeout = (
-            settings.intent_llm_timeout_seconds if has_dedicated_intent_model else 4.0
-        )
+        self._timeout = settings.intent_llm_timeout_seconds if has_dedicated_intent_model else 4.0
         self._reasoning_effort = (
             settings.intent_llm_reasoning_effort if has_dedicated_intent_model else None
         )
@@ -279,9 +306,7 @@ class OpenAICompatibleIntentClassifier:
         )
 
 
-async def analyze_intent(
-    user_text: str, recent_messages: list[dict[str, str]]
-) -> IntentResult:
+async def analyze_intent(user_text: str, recent_messages: list[dict[str, str]]) -> IntentResult:
     settings = get_settings()
     fallback = HeuristicIntentClassifier()
     fallback_result = await fallback.analyze(user_text, recent_messages)

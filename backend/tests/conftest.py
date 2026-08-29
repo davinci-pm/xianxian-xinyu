@@ -17,6 +17,7 @@ os.environ["APP_ENV"] = "test"
 os.environ["LLM_PROVIDER"] = "mock"
 os.environ["RATE_LIMIT_ENABLED"] = "false"
 os.environ["RAG_EMBEDDING_PROVIDER"] = "hash"
+os.environ["RAG_INDEX_CACHE_PERSONAS"] = "2"
 os.environ["INVITE_CODES"] = "SAGE-ALPHA-001,SAGE-BETA-002"
 os.environ["SESSION_SECRET"] = "test-session-secret-with-enough-entropy"
 

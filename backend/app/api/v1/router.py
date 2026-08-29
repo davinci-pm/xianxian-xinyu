@@ -1,5 +1,6 @@
 import asyncio
 import json
+import re
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from time import monotonic
@@ -196,9 +197,7 @@ def _owned_memory(db: Session, memory_id: str, identity: VisitorIdentity) -> Mem
         if identity.user
         else Memory.visitor_id == identity.visitor.id
     )
-    memory = db.scalar(
-        select(Memory).where(Memory.id == memory_id, owner_filter)
-    )
+    memory = db.scalar(select(Memory).where(Memory.id == memory_id, owner_filter))
     if memory is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="未找到该记忆")
     return memory
@@ -206,6 +205,56 @@ def _owned_memory(db: Session, memory_id: str, identity: VisitorIdentity) -> Mem
 
 def _sse(event: str, data: dict[str, Any]) -> str:
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+
+def _retrieval_query(user_text: str, recent_messages: list[dict[str, str]]) -> str:
+    """Restore the subject for short follow-ups without dragging old topics forward."""
+    compact = user_text.strip()
+    noise = re.sub(r"[\s，。！？!?~～哈呵嗯哦啊欸]", "", compact)
+    clear_small_talk = {
+        "你好",
+        "在吗",
+        "早安",
+        "晚安",
+        "谢谢",
+        "谢啦",
+        "吃什么",
+        "天气怎么样",
+    }
+    if compact in clear_small_talk or not noise or re.fullmatch(r"(.)\1{2,}", compact):
+        return ""
+    continuation_markers = (
+        "这个",
+        "那个",
+        "为什么",
+        "然后呢",
+        "继续",
+        "具体呢",
+        "怎么说",
+        "那我",
+        "所以呢",
+    )
+    if len(compact) > 28 and not any(marker in compact for marker in continuation_markers):
+        return compact
+    previous_user = next(
+        (
+            message["content"]
+            for message in reversed(recent_messages)
+            if message.get("role") == "user" and message.get("content")
+        ),
+        "",
+    )
+    if not previous_user and compact in {
+        "为什么",
+        "怎么办",
+        "然后呢",
+        "继续",
+        "具体呢",
+        "是吗",
+        "对吗",
+    }:
+        return ""
+    return f"{previous_user[-500:]}\n{compact}".strip()
 
 
 async def _stream_with_heartbeats(
@@ -228,9 +277,7 @@ async def _stream_with_heartbeats(
     try:
         while True:
             try:
-                kind, payload = await asyncio.wait_for(
-                    queue.get(), timeout=interval_seconds
-                )
+                kind, payload = await asyncio.wait_for(queue.get(), timeout=interval_seconds)
             except TimeoutError:
                 yield _sse("heartbeat", {"phase": phase})
                 continue
@@ -644,9 +691,7 @@ async def _generate_reply(
         )
     )
     recent.reverse()
-    recent_payload = [
-        {"role": message.role, "content": message.content} for message in recent
-    ]
+    recent_payload = [{"role": message.role, "content": message.content} for message in recent]
     intent_task = asyncio.create_task(analyze_intent(user_message.content, recent_payload))
     # 先让远端语义分析请求发出，再并行完成 RAG；避免把两段耗时串联。
     await asyncio.sleep(0)
@@ -657,7 +702,10 @@ async def _generate_reply(
         user_id=identity.user.id if identity.user else None,
         conversation_id=conversation.id,
     )
-    knowledge_hits = retrieve_knowledge(db, persona.id, user_message.content)
+    retrieval_started = monotonic()
+    knowledge_query = _retrieval_query(user_message.content, recent_payload)
+    knowledge_hits = retrieve_knowledge(db, persona.id, knowledge_query) if knowledge_query else []
+    retrieval_ms = int((monotonic() - retrieval_started) * 1000)
     intent_result = await intent_task
     intent_payload = intent_result.analysis.model_dump(mode="json")
     if assessment.level != "L0":
@@ -690,15 +738,23 @@ async def _generate_reply(
     )
     applied_skills: list[str] = []
     applied_skill_modes: dict[str, str] = {}
+    skill_prompt_source_chars = 0
+    skill_prompt_runtime_chars = 0
     skill_instructions: list[str] = []
     skill_failure: Exception | None = None
+    skill_started = monotonic()
     for skill_key in pack.manifest.get("skills", []):
         key = str(skill_key)
         try:
             invoked = skill_adapter.invoke(
                 db,
                 key,
-                {"persona_slug": persona.slug, "stage": next_stage},
+                {
+                    "persona_slug": persona.slug,
+                    "stage": next_stage,
+                    "user_text": user_message.content,
+                    "intent": intent_payload,
+                },
             )
         except (LookupError, PermissionError, ValueError) as exc:
             skill_failure = exc
@@ -711,6 +767,9 @@ async def _generate_reply(
             mode = result.get("mode")
             if isinstance(mode, str):
                 applied_skill_modes[key] = mode
+            skill_prompt_source_chars += int(result.get("source_chars", len(instruction)))
+            skill_prompt_runtime_chars += int(result.get("runtime_chars", len(instruction)))
+    skill_ms = int((monotonic() - skill_started) * 1000)
     context = GenerationContext(
         persona_slug=persona.slug,
         persona_name=persona.name_zh,
@@ -761,7 +820,11 @@ async def _generate_reply(
                 "degraded": intent_result.degraded,
                 "latency_ms": intent_result.latency_ms,
             },
-            "performance": {"preprocessing_ms": preprocessing_ms},
+            "performance": {
+                "preprocessing_ms": preprocessing_ms,
+                "retrieval_ms": retrieval_ms,
+                "skill_ms": skill_ms,
+            },
             "memory_candidate": (
                 _memory_response(memory_candidate).model_dump(mode="json")
                 if memory_candidate
@@ -770,6 +833,10 @@ async def _generate_reply(
             "applied_skills": applied_skills,
             "applied_skill_modes": applied_skill_modes,
             "skill_status": "unavailable" if skill_failure else "ready",
+            "skill_prompt": {
+                "source_chars": skill_prompt_source_chars,
+                "runtime_chars": skill_prompt_runtime_chars,
+            },
             "rag": {
                 "mode": (
                     "hybrid"
@@ -786,6 +853,7 @@ async def _generate_reply(
                         "method": hit.retrieval_method,
                         "keyword_rank": hit.keyword_rank,
                         "vector_rank": hit.vector_rank,
+                        "vector_score": hit.vector_score,
                     }
                     for hit in knowledge_hits
                 ],
@@ -828,15 +896,11 @@ async def _generate_reply(
         degraded = True
         if isinstance(exc, EmptyModelContentError):
             error_code = (
-                f"empty_content:{exc.finish_reason or 'unknown'}:"
-                f"reasoning_{exc.reasoning_chars}"
+                f"empty_content:{exc.finish_reason or 'unknown'}:reasoning_{exc.reasoning_chars}"
             )[:80]
         else:
             error_code = type(exc).__name__
-        fallback = (
-            f"我先接住你这句“{user_message.content[:80]}”。"
-            f"{pack.fallback}"
-        )
+        fallback = f"我先接住你这句“{user_message.content[:80]}”。{pack.fallback}"
         first_chunk_ms = int((monotonic() - turn_started) * 1000)
         output = [fallback]
         yield _sse("degraded", {"reason": "model_unavailable", "message": "已切换人物降级回复"})

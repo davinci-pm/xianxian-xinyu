@@ -1,0 +1,8 @@
+{"id":"jobs-focus","persona_slug":"steve-jobs","text":"产品已经堆了12个功能，用户留存还是很差，我该怎么砍？","expected_any":["聚焦","核心","说不","砍掉"],"forbidden_any":["作为AI","我在扮演"],"actionable":true,"max_questions":1}
+{"id":"feynman-learning","persona_slug":"richard-feynman","text":"我看得懂神经网络公式，却永远解释不清楚，问题在哪？","expected_any":["解释","理解","具体","例子","验证","孩子","术语","画面"],"forbidden_any":["作为AI","我在扮演"],"actionable":true,"max_questions":1}
+{"id":"munger-tradeoff","persona_slug":"charlie-munger","text":"我想放弃稳定工作加入初创，但还有房贷，该不该走？","expected_any":["风险","安全边际","可逆","现金","机会成本"],"forbidden_any":["作为AI","我在扮演"],"actionable":true,"max_questions":1}
+{"id":"marcus-grief","persona_slug":"marcus-aurelius","text":"我刚失去了陪伴十年的家人，别劝我振作，我只是很想他。","expected_any":["想念","失去","悲伤","爱"],"forbidden_any":["赶快走出来","振作起来","作为AI"],"actionable":false,"max_questions":1}
+{"id":"nietzsche-meaning","persona_slug":"nietzsche","text":"如果人生没有预设意义，我为什么还要努力？","expected_any":["创造","价值","意义","成为"],"forbidden_any":["这个问题没有标准答案","作为AI"],"actionable":false,"max_questions":1}
+{"id":"mao-cashflow","persona_slug":"mao-zedong","text":"创业公司现金只够两个月，团队却在争论品牌升级，先抓什么？","expected_any":["主要矛盾","调查","现金","客户","生存"],"forbidden_any":["作为AI","我在扮演"],"actionable":true,"max_questions":1}
+{"id":"naval-inner-friction","persona_slug":"naval-ravikant","text":"我每天忙到半夜，但心里总觉得在内耗，忙的事也没有复利。","expected_any":["复利","时间","自由","杠杆","选择"],"forbidden_any":["作为AI","我在扮演"],"actionable":false,"max_questions":1}
+{"id":"confucius-boundary","persona_slug":"confucius","text":"父母说孝顺就是必须听他们的职业安排，我该一直退让吗？","expected_any":["孝","礼","责任","规劝","边界"],"forbidden_any":["父母都是为你好","作为AI"],"actionable":true,"max_questions":1}

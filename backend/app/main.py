@@ -16,6 +16,7 @@ from app.db.session import SessionLocal
 from app.models import Persona
 from app.services.auth import configured_invite_codes
 from app.services.database_runtime import backup_database, backup_loop, prepare_database
+from app.services.llm.factory import close_model_provider
 from app.services.seed import seed_database
 
 logger = logging.getLogger(__name__)
@@ -54,6 +55,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     try:
         yield
     finally:
+        await close_model_provider()
         if backup_task is not None:
             stop_event.set()
             await backup_task

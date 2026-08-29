@@ -11,16 +11,16 @@ async def test_heuristic_classifier_recognizes_career_anxiety() -> None:
     )
     assert result.analysis.primary_intent == "career"
     assert result.analysis.emotion == "anxious"
-    assert result.analysis.recommended_stage == "CLARIFY"
+    assert result.analysis.recommended_stage == "GUIDANCE"
+    assert result.analysis.recommended_move == "action"
+    assert result.analysis.should_ask_question is False
     assert result.analysis.memory_should_offer is True
     assert result.analysis.memory_kind == "goal"
     assert "辞职转行" in result.analysis.memory_content
 
 
 async def test_heuristic_classifier_does_not_offer_transient_request() -> None:
-    result = await HeuristicIntentClassifier().analyze(
-        "我希望你直接一点回答，不要列太多条目", []
-    )
+    result = await HeuristicIntentClassifier().analyze("我希望你直接一点回答，不要列太多条目", [])
     assert result.analysis.memory_should_offer is False
     assert result.analysis.memory_kind == "none"
     assert result.analysis.memory_content == ""
@@ -60,10 +60,7 @@ def test_director_uses_only_confident_model_recommendation() -> None:
 
 def test_director_only_ends_for_explicit_conversation_end() -> None:
     director = ConversationDirector()
-    assert (
-        director.next_stage("CLARIFY", "我在考虑结束这段关系", 0)
-        == DialogueStage.GUIDANCE
-    )
+    assert director.next_stage("CLARIFY", "我在考虑结束这段关系", 0) == DialogueStage.GUIDANCE
     assert director.next_stage("CLARIFY", "请结束本次对话", 0) == DialogueStage.END
 
 

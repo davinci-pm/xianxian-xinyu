@@ -35,6 +35,12 @@ class Settings(BaseSettings):
     # reasoning_content 而没有 content，因此默认以内容完整性优先。
     llm_max_tokens: int = 4096
     llm_retry_attempts: int = 3
+    # DeepSeek thinking defaults to enabled. Adaptive mode keeps ordinary dialogue
+    # quick and reserves low-effort reasoning for genuinely complex decisions.
+    llm_thinking_mode: str = "adaptive"
+    llm_reasoning_effort: str = "low"
+    llm_fast_max_tokens: int = 1_200
+    llm_complex_max_tokens: int = 2_048
 
     # 对话导演与人物生成分离。意图模型失败时始终回退到本地规则，不阻断聊天。
     intent_llm_enabled: bool = False
@@ -83,6 +89,7 @@ class Settings(BaseSettings):
     rag_chunk_overlap_chars: int = 80
     rag_keyword_candidates: int = 12
     rag_vector_candidates: int = 12
+    rag_index_cache_personas: int = 2
     rag_final_limit: int = 4
 
     @model_validator(mode="after")
