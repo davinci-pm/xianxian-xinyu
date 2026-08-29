@@ -209,7 +209,7 @@ def _sse(event: str, data: dict[str, Any]) -> str:
 
 
 async def _stream_with_heartbeats(
-    source: AsyncIterator[str], *, interval_seconds: float = 6.0
+    source: AsyncIterator[str], *, interval_seconds: float = 3.0
 ) -> AsyncIterator[str]:
     """Keep the browser connection visibly alive while preprocessing or reasoning."""
     queue: asyncio.Queue[tuple[str, str | Exception | None]] = asyncio.Queue()
@@ -660,6 +660,13 @@ async def _generate_reply(
     knowledge_hits = retrieve_knowledge(db, persona.id, user_message.content)
     intent_result = await intent_task
     intent_payload = intent_result.analysis.model_dump(mode="json")
+    if assessment.level != "L0":
+        intent_payload["safety_context"] = {
+            "level": assessment.level,
+            "category": assessment.category,
+            "response_mode": "stay_in_character_supportively",
+            "guidance": "完整回应主要问题；不因敏感词中断；必要时最多确认一次当前安全状况",
+        }
     memory_candidate = create_memory_candidate(
         db,
         visitor_id=identity.visitor.id,

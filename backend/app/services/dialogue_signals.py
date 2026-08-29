@@ -1,6 +1,5 @@
 import re
 
-
 EXACT_END_PHRASES = {
     "先这样",
     "今天先这样",

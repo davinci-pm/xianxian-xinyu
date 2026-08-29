@@ -34,6 +34,6 @@ def test_dialogue_director_covers_required_stages() -> None:
 
 
 def test_high_risk_signal_breaks_role() -> None:
-    assessment = assess_safety("我不想活了，想结束生命")
+    assessment = assess_safety("我现在就要结束生命，马上会行动")
     assert assessment.level == "L3"
     assert assessment.should_break_role is True
