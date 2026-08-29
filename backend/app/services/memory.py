@@ -1,7 +1,6 @@
-import re
 from datetime import UTC, datetime
 
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session
 
 from app.models import Memory, Message
@@ -16,10 +15,16 @@ SENSITIVE_TERMS = (
     "诊断",
     "病历",
 )
-MEMORY_PATTERN = re.compile(r"我(想|希望|正在|准备|打算)([^。！？\n]{2,100})")
+ALLOWED_MEMORY_KINDS = {
+    "preference",
+    "personal_context",
+    "goal",
+    "unresolved_issue",
+    "decision",
+}
 
 
-def extract_memory_candidate(
+def create_memory_candidate(
     db: Session,
     *,
     visitor_id: str,
@@ -27,23 +32,41 @@ def extract_memory_candidate(
     persona_id: str,
     conversation_id: str,
     message: Message,
+    should_offer: bool,
+    kind: str,
+    content: str,
+    confidence: float,
 ) -> Memory | None:
-    if any(term in message.content for term in SENSITIVE_TERMS):
+    cleaned = content.strip()
+    if (
+        not should_offer
+        or kind not in ALLOWED_MEMORY_KINDS
+        or confidence < 0.72
+        or not cleaned
+        or any(term in cleaned for term in SENSITIVE_TERMS)
+    ):
         return None
-    match = MEMORY_PATTERN.search(message.content)
-    if not match:
+    owner_filter = Memory.user_id == user_id if user_id else Memory.visitor_id == visitor_id
+    duplicate = db.scalar(
+        select(Memory.id).where(
+            owner_filter,
+            Memory.persona_id == persona_id,
+            Memory.content == cleaned[:500],
+            Memory.status.in_(("pending", "confirmed", "paused")),
+        )
+    )
+    if duplicate is not None:
         return None
-    content = f"用户{match.group(1)}{match.group(2).strip()}"
     candidate = Memory(
         visitor_id=visitor_id,
         user_id=user_id,
         persona_id=persona_id,
         conversation_id=conversation_id,
-        kind="goal_or_unresolved_issue",
-        content=content[:500],
+        kind=kind,
+        content=cleaned[:500],
         scope="candidate",
         status="pending",
-        confidence=78,
+        confidence=round(confidence * 100),
         source_message_id=message.id,
     )
     db.add(candidate)
@@ -58,14 +81,24 @@ def list_confirmed_memories(
     limit: int = 5,
     *,
     user_id: str | None = None,
+    conversation_id: str | None = None,
 ) -> list[Memory]:
     owner_filter = Memory.user_id == user_id if user_id else Memory.visitor_id == visitor_id
+    scope_filter = Memory.scope == "long_term"
+    if conversation_id:
+        scope_filter = or_(
+            Memory.scope == "long_term",
+            and_(
+                Memory.scope == "session",
+                Memory.conversation_id == conversation_id,
+            ),
+        )
     statement = (
         select(Memory)
         .where(
             owner_filter,
             Memory.persona_id == persona_id,
-            Memory.scope == "long_term",
+            scope_filter,
             Memory.status == "confirmed",
         )
         .order_by(Memory.confirmed_at.desc())

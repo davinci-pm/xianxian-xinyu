@@ -20,6 +20,7 @@ test("首页筛选可以清空并恢复人物", async ({ page }) => {
 
 test("思想路径到札记和继续对话的完整主链路", async ({ page }, testInfo) => {
   const mobile = isMobile(testInfo);
+  await page.context().addInitScript(() => { window.print = () => undefined; });
   await page.goto("/");
   await page.getByLabel("此刻，什么事情最困扰你？").fill("我想换工作，但担心影响家人，也害怕自己选错");
   await page.getByRole("button", { name: "从当前困惑开始" }).click();
@@ -73,6 +74,30 @@ test("思想路径到札记和继续对话的完整主链路", async ({ page }, 
   await page.context().setOffline(false);
   await page.reload();
   await expect(page.getByLabel("札记正文")).toContainText("明天先和家人谈清楚");
+
+  await page.getByRole("button", { name: "导出札记" }).click();
+  await expect(page.getByText("默认只保留重要内容")).toBeVisible();
+  const markdownDownload = page.waitForEvent("download");
+  await page.getByRole("button", { name: /Markdown/ }).click();
+  await expect((await markdownDownload).suggestedFilename()).toMatch(/\.md$/);
+
+  await page.getByRole("button", { name: "导出札记" }).click();
+  await page.getByText("附上完整对话记录").click();
+  const wordDownload = page.waitForEvent("download");
+  await page.getByRole("button", { name: /Word/ }).click();
+  const downloadedWord = await wordDownload;
+  await expect(downloadedWord.suggestedFilename()).toMatch(/\.docx$/);
+  if (process.env.EXPORT_QA_DIR) await downloadedWord.saveAs(`${process.env.EXPORT_QA_DIR}/heart-note.docx`);
+
+  await page.getByRole("button", { name: "导出札记" }).click();
+  const printPagePromise = page.context().waitForEvent("page");
+  await page.getByRole("button", { name: /PDF/ }).click();
+  const printPage = await printPagePromise;
+  await expect(printPage.getByRole("heading", { name: "我愿意承担的下一步" })).toBeVisible();
+  await expect(printPage.getByRole("heading", { name: "完整对话记录" })).toBeVisible();
+  if (process.env.EXPORT_QA_DIR) await printPage.pdf({ path: `${process.env.EXPORT_QA_DIR}/heart-note.pdf`, format: "A4", printBackground: true });
+  await printPage.close();
+
   await page.getByRole("link", { name: "继续对话" }).click();
   await expect(page).toHaveURL(new RegExp(`/chat/${conversationId}`));
 
@@ -80,6 +105,18 @@ test("思想路径到札记和继续对话的完整主链路", async ({ page }, 
   await startConversation(page, mobile);
   await expect(page.getByTestId("remembered-context")).toContainText("AI产品经理");
   await expect(page.getByText("我记得你上次提到", { exact: false })).toBeVisible();
+
+  await page.goto("/settings/memory");
+  const memory = page.locator(".memory-settings-list article").first();
+  await expect(memory).toContainText("AI产品经理");
+  await memory.getByRole("button", { name: "修改", exact: true }).click();
+  await memory.getByRole("textbox").fill("我希望转行做教育产品经理");
+  await memory.getByRole("button", { name: "保存修改" }).click();
+  await expect(memory).toContainText("教育产品经理");
+  await memory.getByRole("button", { name: "暂停使用" }).click();
+  await expect(memory).toContainText("已暂停使用");
+  await memory.getByRole("button", { name: "恢复使用" }).click();
+  await expect(memory).not.toContainText("已暂停使用");
 });
 
 test("安全响应后输入不锁死且可以恢复", async ({ page }, testInfo) => {

@@ -125,6 +125,11 @@ class MemoryConfirmRequest(BaseModel):
     content: str | None = Field(default=None, min_length=1, max_length=500)
 
 
+class MemoryUpdateRequest(BaseModel):
+    content: str | None = Field(default=None, min_length=1, max_length=500)
+    paused: bool | None = None
+
+
 class SkillResponse(ApiModel):
     skill_key: str
     name: str

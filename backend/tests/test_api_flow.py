@@ -90,6 +90,82 @@ def test_cards_detail_opening_followup_and_restore(client: TestClient) -> None:
     assert "AI产品经理" in next_conversation["opening_message"]["content"]
 
 
+def test_only_important_memory_is_offered(client: TestClient) -> None:
+    created = create_confucius_conversation(client)
+    conversation_id = created["conversation"]["id"]
+    response = client.post(
+        f"/api/v1/conversations/{conversation_id}/messages/stream",
+        json={"content": "我希望你直接一点回答", "idempotency_key": "no-memory-0001"},
+    )
+    events = parse_sse(response.text)
+    assert events[0][1]["intent"]["memory_should_offer"] is False
+    assert events[0][1]["memory_candidate"] is None
+
+
+def test_long_term_memory_can_be_edited_paused_resumed_and_deleted(
+    client: TestClient,
+) -> None:
+    created = create_confucius_conversation(client)
+    conversation_id = created["conversation"]["id"]
+    response = client.post(
+        f"/api/v1/conversations/{conversation_id}/messages/stream",
+        json={
+            "content": "我计划明年转行做产品经理",
+            "idempotency_key": "memory-crud-0001",
+        },
+    )
+    candidate = parse_sse(response.text)[0][1]["memory_candidate"]
+    confirmed = client.post(
+        f"/api/v1/memories/{candidate['id']}/confirm", json={"action": "remember"}
+    )
+    assert confirmed.status_code == 200
+
+    edited = client.patch(
+        f"/api/v1/memories/{candidate['id']}",
+        json={"content": "我计划明年转行做教育产品经理"},
+    )
+    assert edited.status_code == 200
+    assert edited.json()["content"] == "我计划明年转行做教育产品经理"
+
+    paused = client.patch(
+        f"/api/v1/memories/{candidate['id']}", json={"paused": True}
+    )
+    assert paused.json()["status"] == "paused"
+    while_paused = create_confucius_conversation(client)
+    assert while_paused["remembered_context"] == []
+
+    resumed = client.patch(
+        f"/api/v1/memories/{candidate['id']}", json={"paused": False}
+    )
+    assert resumed.json()["status"] == "confirmed"
+    after_resume = create_confucius_conversation(client)
+    assert "教育产品经理" in after_resume["opening_message"]["content"]
+
+    deleted = client.delete(f"/api/v1/memories/{candidate['id']}")
+    assert deleted.status_code == 204
+    assert all(item["id"] != candidate["id"] for item in client.get("/api/v1/memories").json())
+
+
+def test_long_term_memory_is_isolated_by_persona(client: TestClient) -> None:
+    created = create_confucius_conversation(client)
+    conversation_id = created["conversation"]["id"]
+    response = client.post(
+        f"/api/v1/conversations/{conversation_id}/messages/stream",
+        json={
+            "content": "我的目标是今年读完十二本经典",
+            "idempotency_key": "memory-scope-0001",
+        },
+    )
+    candidate = parse_sse(response.text)[0][1]["memory_candidate"]
+    client.post(f"/api/v1/memories/{candidate['id']}/confirm", json={"action": "remember"})
+
+    nietzsche = client.post(
+        "/api/v1/conversations", json={"persona_slug": "nietzsche"}
+    )
+    assert nietzsche.status_code == 201
+    assert nietzsche.json()["remembered_context"] == []
+
+
 def test_safety_response_stops_role_play(client: TestClient) -> None:
     created = create_confucius_conversation(client)
     conversation_id = created["conversation"]["id"]

@@ -31,6 +31,14 @@ EmotionName = Literal[
 ]
 DialogueMove = Literal["clarify", "reflect", "reframe", "challenge", "example", "action"]
 RecommendedStage = Literal["IDENTIFY_PROBLEM", "CLARIFY", "GUIDANCE", "REFLECTION", "END"]
+MemoryKind = Literal[
+    "none",
+    "preference",
+    "personal_context",
+    "goal",
+    "unresolved_issue",
+    "decision",
+]
 
 
 class IntentAnalysis(BaseModel):
@@ -42,6 +50,10 @@ class IntentAnalysis(BaseModel):
     recommended_stage: RecommendedStage
     should_ask_question: bool
     confidence: float = Field(ge=0, le=1)
+    memory_should_offer: bool
+    memory_kind: MemoryKind
+    memory_content: str = Field(max_length=160)
+    memory_confidence: float = Field(ge=0, le=1)
 
 
 @dataclass(frozen=True)
@@ -115,6 +127,34 @@ class HeuristicIntentClassifier:
             move = "reframe"
             should_ask = False
 
+        memory_should_offer = False
+        memory_kind: MemoryKind = "none"
+        memory_content = ""
+        memory_confidence = 0.0
+        sensitive = any(
+            marker in text
+            for marker in ("身份证", "银行卡", "密码", "住址", "病历", "诊断", "自杀", "自残")
+        )
+        asks_assistant = any(marker in text for marker in ("我希望你", "我想让你", "我想问你"))
+        memory_patterns: tuple[tuple[MemoryKind, tuple[str, ...]], ...] = (
+            ("decision", ("我决定", "我已经决定", "我最终选择")),
+            ("preference", ("我喜欢", "我不喜欢", "我的偏好", "我习惯")),
+            (
+                "goal",
+                ("我的目标", "我计划", "我准备", "我打算", "我希望", "我想辞职", "我想转行"),
+            ),
+            ("personal_context", ("我的工作是", "我在做", "我是一个", "我目前在")),
+            ("unresolved_issue", ("我一直困扰", "我长期", "我总是")),
+        )
+        if not sensitive and not asks_assistant:
+            for candidate_kind, markers in memory_patterns:
+                if any(marker in text for marker in markers):
+                    memory_should_offer = True
+                    memory_kind = candidate_kind
+                    memory_content = text[:160]
+                    memory_confidence = 0.82
+                    break
+
         analysis = IntentAnalysis(
             primary_intent=primary_intent,
             emotion=emotion,
@@ -124,6 +164,10 @@ class HeuristicIntentClassifier:
             recommended_stage=stage,
             should_ask_question=should_ask,
             confidence=0.99 if primary_intent == "end" else min(0.48 + signal_count * 0.18, 0.9),
+            memory_should_offer=memory_should_offer,
+            memory_kind=memory_kind,
+            memory_content=memory_content,
+            memory_confidence=memory_confidence,
         )
         return IntentResult(
             analysis=analysis,
@@ -135,26 +179,56 @@ class HeuristicIntentClassifier:
 
 class OpenAICompatibleIntentClassifier:
     def __init__(self, settings: Settings) -> None:
-        if not settings.intent_llm_api_key or not settings.intent_llm_base_url:
-            raise RuntimeError("意图模型需要 INTENT_LLM_API_KEY 与 INTENT_LLM_BASE_URL")
-        self._api_key = settings.intent_llm_api_key
-        self._base_url = settings.intent_llm_base_url.rstrip("/")
-        self._model = settings.intent_llm_model
-        self._timeout = settings.intent_llm_timeout_seconds
-        self._reasoning_effort = settings.intent_llm_reasoning_effort
+        has_dedicated_intent_model = bool(
+            settings.intent_llm_api_key and settings.intent_llm_base_url
+        )
+        self._api_key = (
+            settings.intent_llm_api_key
+            if has_dedicated_intent_model
+            else settings.llm_api_key
+        )
+        base_url = (
+            settings.intent_llm_base_url
+            if has_dedicated_intent_model
+            else settings.llm_base_url
+        )
+        if not self._api_key or not base_url:
+            raise RuntimeError("语义分析需要独立意图模型或主模型配置")
+        self._base_url = base_url.rstrip("/")
+        self._model = (
+            settings.intent_llm_model
+            if has_dedicated_intent_model
+            else settings.llm_model
+        )
+        self._timeout = (
+            settings.intent_llm_timeout_seconds if has_dedicated_intent_model else 4.0
+        )
+        self._reasoning_effort = (
+            settings.intent_llm_reasoning_effort if has_dedicated_intent_model else None
+        )
 
     async def analyze(self, user_text: str, recent_messages: list[dict[str, str]]) -> IntentResult:
         started = monotonic()
         schema = IntentAnalysis.model_json_schema()
+        schema_text = json.dumps(schema, ensure_ascii=False)
+        is_deepseek = "api.deepseek.com" in self._base_url
         payload: dict[str, object] = {
             "model": self._model,
             "stream": False,
             "temperature": 0.1,
-            "max_tokens": 320,
-            "response_format": {
-                "type": "json_schema",
-                "json_schema": {"name": "dialogue_intent", "strict": True, "schema": schema},
-            },
+            "max_tokens": 480,
+            "response_format": (
+                {"type": "json_object"}
+                if is_deepseek
+                else {
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": "dialogue_intent",
+                        "strict": True,
+                        "schema": schema,
+                    },
+                }
+            ),
             "messages": [
                 {
                     "role": "system",
@@ -162,6 +236,13 @@ class OpenAICompatibleIntentClassifier:
                         "你是主动型思想人格聊天产品的对话导演。分析用户真实意图、情绪和需要，"
                         "选择下一步对话动作。不要进行心理诊断，不要输出建议正文，只输出指定 JSON。"
                         "如果信息不足优先 CLARIFY；用户明确结束才选 END。"
+                        "同时保守判断本轮是否包含值得当前人物跨会话记住的重要信息。"
+                        "只有可能持续至少数周、且会明显改善未来对话的稳定偏好、个人背景、长期目标、"
+                        "未解决问题或明确决定，memory_should_offer 才为 true；临时情绪、普通闲聊、"
+                        "对助手的要求、重复信息和敏感信息必须为 false。"
+                        "memory_content 要独立、简短、忠于用户原意，不添加推测；"
+                        "不需要记忆时内容为空、kind 为 none、置信度为 0。"
+                        f"只输出符合以下 JSON Schema 的 JSON：{schema_text}"
                     ),
                 },
                 {
@@ -173,6 +254,8 @@ class OpenAICompatibleIntentClassifier:
                 },
             ],
         }
+        if is_deepseek:
+            payload["thinking"] = {"type": "disabled"}
         if self._reasoning_effort:
             payload["reasoning_effort"] = self._reasoning_effort
         headers = {"Authorization": f"Bearer {self._api_key}", "Content-Type": "application/json"}
@@ -206,6 +289,7 @@ async def analyze_intent(
     if (
         settings.intent_local_fast_path_enabled
         and fallback_result.analysis.confidence >= settings.intent_local_fast_path_threshold
+        and fallback_result.analysis.primary_intent == "end"
     ):
         return fallback_result
     started = monotonic()

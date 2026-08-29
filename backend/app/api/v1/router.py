@@ -34,6 +34,7 @@ from app.schemas.api import (
     InviteLoginRequest,
     MemoryConfirmRequest,
     MemoryResponse,
+    MemoryUpdateRequest,
     MessageResponse,
     PersonaCard,
     PersonaDetail,
@@ -53,7 +54,7 @@ from app.services.knowledge import KnowledgeHit, retrieve_knowledge
 from app.services.llm.base import GenerationContext
 from app.services.llm.factory import get_model_provider
 from app.services.llm.openai_compatible import EmptyModelContentError
-from app.services.memory import confirm_memory, extract_memory_candidate, list_confirmed_memories
+from app.services.memory import confirm_memory, create_memory_candidate, list_confirmed_memories
 from app.services.persona_loader import PersonaPack, load_persona_pack
 from app.services.safety import (
     SafetyAssessment,
@@ -140,6 +141,7 @@ def _conversation_detail(
         conversation.visitor_id,
         persona.id,
         user_id=conversation.user_id,
+        conversation_id=conversation.id,
     )
     return ConversationDetail(
         id=conversation.id,
@@ -596,25 +598,30 @@ async def _generate_reply(
         {"role": message.role, "content": message.content} for message in recent
     ]
     intent_task = asyncio.create_task(analyze_intent(user_message.content, recent_payload))
-    # 先让远端意图请求发出，再并行完成本地记忆与 RAG；避免把两段耗时串联。
+    # 先让远端语义分析请求发出，再并行完成 RAG；避免把两段耗时串联。
     await asyncio.sleep(0)
-    memory_candidate = extract_memory_candidate(
+    confirmed_memories = list_confirmed_memories(
+        db,
+        identity.visitor.id,
+        persona.id,
+        user_id=identity.user.id if identity.user else None,
+        conversation_id=conversation.id,
+    )
+    knowledge_hits = retrieve_knowledge(db, persona.id, user_message.content)
+    intent_result = await intent_task
+    intent_payload = intent_result.analysis.model_dump(mode="json")
+    memory_candidate = create_memory_candidate(
         db,
         visitor_id=identity.visitor.id,
         user_id=identity.user.id if identity.user else None,
         persona_id=persona.id,
         conversation_id=conversation.id,
         message=user_message,
+        should_offer=intent_result.analysis.memory_should_offer,
+        kind=intent_result.analysis.memory_kind,
+        content=intent_result.analysis.memory_content,
+        confidence=intent_result.analysis.memory_confidence,
     )
-    confirmed_memories = list_confirmed_memories(
-        db,
-        identity.visitor.id,
-        persona.id,
-        user_id=identity.user.id if identity.user else None,
-    )
-    knowledge_hits = retrieve_knowledge(db, persona.id, user_message.content)
-    intent_result = await intent_task
-    intent_payload = intent_result.analysis.model_dump(mode="json")
     next_stage = conversation_director.next_stage(
         conversation.stage,
         user_message.content,
@@ -876,13 +883,46 @@ def get_memories(
                 Memory.user_id == identity.user.id
                 if identity.user
                 else Memory.visitor_id == identity.visitor.id,
-                Memory.status == "confirmed",
+                Memory.scope == "long_term",
+                Memory.status.in_(("confirmed", "paused")),
             )
             .order_by(Memory.confirmed_at.desc())
         )
     )
     _set_visitor_cookie(response, identity)
     return [_memory_response(memory) for memory in memories]
+
+
+@router.patch("/memories/{memory_id}", response_model=MemoryResponse)
+def edit_memory(
+    memory_id: str,
+    payload: MemoryUpdateRequest,
+    request: Request,
+    response: Response,
+    db: Session = Depends(get_db),
+) -> MemoryResponse:
+    identity = resolve_visitor(request, db)
+    memory = _owned_memory(db, memory_id, identity)
+    if memory.scope != "long_term" or memory.status not in {"confirmed", "paused"}:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="该记忆不可编辑")
+    if payload.content is not None:
+        memory.content = payload.content.strip()
+    if payload.paused is not None:
+        memory.status = "paused" if payload.paused else "confirmed"
+    db.commit()
+    db.refresh(memory)
+    _set_visitor_cookie(response, identity)
+    return _memory_response(memory)
+
+
+@router.delete("/memories/{memory_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_memory(memory_id: str, request: Request, db: Session = Depends(get_db)) -> None:
+    identity = resolve_visitor(request, db)
+    memory = _owned_memory(db, memory_id, identity)
+    if memory.scope != "long_term":
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="该记忆不可删除")
+    db.delete(memory)
+    db.commit()
 
 
 @router.get("/skills", response_model=list[SkillResponse])

@@ -1,4 +1,4 @@
-import type { ConversationDetail, MemoryItem } from "@/lib/types";
+import type { ConversationDetail } from "@/lib/types";
 import { displayPersonaName } from "@/lib/persona-visual";
 
 export interface NoteRecord {
@@ -15,15 +15,7 @@ export interface NoteRecord {
   updatedAt: string;
 }
 
-export interface MemoryOverlay {
-  memoryId: string;
-  content?: string;
-  hidden?: boolean;
-  paused?: boolean;
-}
-
 const NOTES_KEY = "xianxian-notes-v1";
-const MEMORY_KEY = "xianxian-memory-overlays-v1";
 const NOTES_EVENT = "xianxian:notes-changed";
 
 function readJson<T>(key: string, fallback: T): T {
@@ -86,20 +78,5 @@ export function noteFromConversation(conversation: ConversationDetail): NoteReco
     summary: conversation.short_summary ?? assistantLines.at(-1)?.slice(0, 120) ?? "一段仍在展开的思想对话",
     body, themes: extractThemes(conversation), memories: conversation.confirmed_memories.map((memory) => memory.content), createdAt: now, updatedAt: now,
   });
-}
-
-export function getMemoryOverlays() { return readJson<MemoryOverlay[]>(MEMORY_KEY, []); }
-
-export function saveMemoryOverlay(overlay: MemoryOverlay) {
-  const overlays = getMemoryOverlays();
-  const index = overlays.findIndex((item) => item.memoryId === overlay.memoryId);
-  if (index >= 0) overlays[index] = { ...overlays[index], ...overlay }; else overlays.push(overlay);
-  writeJson(MEMORY_KEY, overlays);
-  return overlays;
-}
-
-export function applyMemoryOverlay(memory: MemoryItem, overlays: MemoryOverlay[]) {
-  const overlay = overlays.find((item) => item.memoryId === memory.id);
-  return { ...memory, content: overlay?.content ?? memory.content, hidden: Boolean(overlay?.hidden), paused: Boolean(overlay?.paused) };
 }
 

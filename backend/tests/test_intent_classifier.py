@@ -12,6 +12,18 @@ async def test_heuristic_classifier_recognizes_career_anxiety() -> None:
     assert result.analysis.primary_intent == "career"
     assert result.analysis.emotion == "anxious"
     assert result.analysis.recommended_stage == "CLARIFY"
+    assert result.analysis.memory_should_offer is True
+    assert result.analysis.memory_kind == "goal"
+    assert "辞职转行" in result.analysis.memory_content
+
+
+async def test_heuristic_classifier_does_not_offer_transient_request() -> None:
+    result = await HeuristicIntentClassifier().analyze(
+        "我希望你直接一点回答，不要列太多条目", []
+    )
+    assert result.analysis.memory_should_offer is False
+    assert result.analysis.memory_kind == "none"
+    assert result.analysis.memory_content == ""
 
 
 async def test_heuristic_classifier_recognizes_explicit_end() -> None:
@@ -35,14 +47,14 @@ def test_director_uses_only_confident_model_recommendation() -> None:
     assert director.should_ask_question(DialogueStage.GUIDANCE, 0, confident) is False
 
 
-async def test_obvious_intent_uses_zero_network_fast_path(monkeypatch: Any) -> None:
+async def test_explicit_end_uses_zero_network_fast_path(monkeypatch: Any) -> None:
     settings = SimpleNamespace(
         intent_llm_enabled=True,
         intent_local_fast_path_enabled=True,
         intent_local_fast_path_threshold=0.82,
     )
     monkeypatch.setattr("app.services.intent_classifier.get_settings", lambda: settings)
-    result = await analyze_intent("我想辞职转行，但特别担心失败", [])
+    result = await analyze_intent("今天先这样，下次再聊", [])
     assert result.provider == "local"
-    assert result.analysis.primary_intent == "career"
+    assert result.analysis.primary_intent == "end"
     assert result.analysis.confidence >= 0.82

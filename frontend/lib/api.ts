@@ -47,6 +47,13 @@ export const api = {
       body: JSON.stringify({ action }),
     }),
   memories: () => jsonRequest<MemoryItem[]>("/memories"),
+  updateMemory: (id: string, payload: { content?: string; paused?: boolean }) =>
+    jsonRequest<MemoryItem>(`/memories/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    }),
+  deleteMemory: (id: string) =>
+    jsonRequest<void>(`/memories/${id}`, { method: "DELETE" }),
   skills: () => jsonRequest<SkillInfo[]>("/skills"),
   async *sendMessage(
     conversationId: string,
