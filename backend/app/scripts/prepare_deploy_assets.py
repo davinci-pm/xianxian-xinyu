@@ -86,12 +86,35 @@ def _create_vefaas_bundle() -> None:
     # veFaaS does not always attach the remote dependency task output to the
     # released revision. Build a Linux CPython 3.12 vendor tree locally so the
     # uploaded package is self-contained even when deployment runs from macOS.
+    installer_python = sys.executable
+    pip_check = subprocess.run(
+        [installer_python, "-m", "pip", "--version"],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+    if pip_check.returncode != 0:
+        # uv-managed virtual environments intentionally omit pip. A host Python
+        # can still build the cross-platform CPython 3.12 vendor directory.
+        base_python = (
+            Path(sys.base_prefix)
+            / "bin"
+            / f"python{sys.version_info.major}.{sys.version_info.minor}"
+        )
+        installer_python = (
+            str(base_python)
+            if base_python.is_file()
+            else shutil.which("python3.11") or shutil.which("python3") or ""
+        )
+    if not installer_python:
+        raise RuntimeError("找不到可用于生成 Linux vendor 依赖的 Python/pip")
     subprocess.run(
         [
-            sys.executable,
+            installer_python,
             "-m",
             "pip",
             "install",
+            "--quiet",
             "--disable-pip-version-check",
             "--no-compile",
             "--target",

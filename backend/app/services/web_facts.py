@@ -45,6 +45,7 @@ _TRUSTED_DOMAINS = (
     "wsj.com",
     "caixin.com",
 )
+_BLOCKED_DOMAINS = ("360kuai.com",)
 _TAG_RE = re.compile(r"<[^>]+>")
 _SPACE_RE = re.compile(r"\s+")
 _RELATIVE_DATE_RE = re.compile(r"^(\d+)\s*(分钟|小时|天)前$")
@@ -119,6 +120,8 @@ def parse_bing_news_rss(payload: str, *, limit: int) -> list[WebFact]:
             continue
         seen.add(fingerprint)
         domain = parsed.netloc.lower().removeprefix("www.")
+        if any(domain == item or domain.endswith(f".{item}") for item in _BLOCKED_DOMAINS):
+            continue
         facts.append(
             WebFact(
                 id=f"web-{fingerprint}",
@@ -157,7 +160,17 @@ class _SoNewsParser(HTMLParser):
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         attributes = {key: value or "" for key, value in attrs}
-        if tag == "a" and _class_has(attributes, "mh-news-title"):
+        if tag == "li" and _class_has(attributes, "res-list"):
+            self._finish()
+            self.current = {
+                "source_url": attributes.get("data-url", ""),
+                "title": "",
+                "summary": "",
+                "published": "",
+            }
+        elif tag == "a" and self.current and attributes.get("title"):
+            self.current["title"] = attributes["title"]
+        elif tag == "a" and _class_has(attributes, "mh-news-title"):
             self._finish()
             self.current = {
                 "source_url": attributes.get("data-mdurl", ""),
@@ -166,9 +179,13 @@ class _SoNewsParser(HTMLParser):
                 "published": "",
             }
             self.capture = "title"
-        elif self.current and tag == "p" and _class_has(attributes, "mh-news-desc"):
+        elif self.current and tag == "p" and (
+            _class_has(attributes, "mh-news-desc") or _class_has(attributes, "summary")
+        ):
             self.capture = "summary"
-        elif self.current and tag == "span" and _class_has(attributes, "mh-pdate"):
+        elif self.current and tag == "span" and (
+            _class_has(attributes, "mh-pdate") or _class_has(attributes, "time")
+        ):
             self.capture = "published"
 
     def handle_endtag(self, tag: str) -> None:
@@ -176,6 +193,8 @@ class _SoNewsParser(HTMLParser):
             tag == "p" and self.capture == "summary"
         ) or (tag == "span" and self.capture == "published"):
             self.capture = None
+        if tag == "li" and self.current is not None:
+            self._finish()
 
     def handle_data(self, data: str) -> None:
         if self.current is not None and self.capture:
@@ -236,6 +255,8 @@ def parse_so_news_html(
             continue
         seen.add(fingerprint)
         domain = parsed.netloc.lower().removeprefix("www.")
+        if any(domain == item or domain.endswith(f".{item}") for item in _BLOCKED_DOMAINS):
+            continue
         facts.append(
             WebFact(
                 id=f"web-{fingerprint}",

@@ -266,7 +266,13 @@ def test_private_studio_builds_versioned_persona_and_keeps_it_isolated(
     with TestClient(client.app) as other_user:
         _login(other_user, "SAGE-BETA-002")
         assert other_user.get(f"/api/v1/studio/projects/{project_id}").status_code == 404
+        assert other_user.delete(f"/api/v1/studio/projects/{project_id}").status_code == 404
         assert other_user.get(f"/api/v1/personas/{slug}").status_code == 404
         assert (
             other_user.post("/api/v1/conversations", json={"persona_slug": slug}).status_code == 404
         )
+
+    archived = client.delete(f"/api/v1/studio/projects/{project_id}")
+    assert archived.status_code == 204
+    assert all(item["id"] != project_id for item in client.get("/api/v1/studio/projects").json())
+    assert all(item["slug"] != slug for item in client.get("/api/v1/me/personas").json())

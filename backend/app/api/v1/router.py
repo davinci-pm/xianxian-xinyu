@@ -484,7 +484,10 @@ def list_studio_projects(
     projects = list(
         db.scalars(
             select(PersonaProject)
-            .where(PersonaProject.owner_user_id == identity.user.id)
+            .where(
+                PersonaProject.owner_user_id == identity.user.id,
+                PersonaProject.status != "archived",
+            )
             .order_by(PersonaProject.updated_at.desc())
         )
     )
@@ -529,6 +532,25 @@ def get_studio_project(
     identity = resolve_visitor(request, db, require_auth=True)
     project = _owned_project(db, project_id, identity)
     return _studio_project_response(db, project)
+
+
+@router.delete("/studio/projects/{project_id}", status_code=status.HTTP_204_NO_CONTENT)
+def archive_studio_project(
+    project_id: str,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> Response:
+    """Soft-delete a private project while keeping its evidence recoverable."""
+    project = _owned_project(db, project_id, resolve_visitor(request, db, require_auth=True))
+    project.status = "archived"
+    project.visibility = "archived"
+    if project.persona_id:
+        persona = db.get(Persona, project.persona_id)
+        if persona is not None:
+            persona.status = "archived"
+            persona.visibility = "archived"
+    db.commit()
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.post(
@@ -810,6 +832,7 @@ def list_owned_personas(
             .where(
                 Persona.owner_user_id == identity.user.id,
                 Persona.origin_type == "user_created",
+                Persona.status != "archived",
             )
             .order_by(Persona.updated_at.desc())
         )

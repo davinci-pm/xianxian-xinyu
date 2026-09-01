@@ -60,3 +60,29 @@ def test_parse_so_news_html_keeps_direct_relevant_sources_only() -> None:
     assert facts[0].summary == "公开文件已发布，涉及 孙宇晨。"
     assert facts[0].source_url == "https://example.com/relevant"
     assert facts[0].published_at == "2026-08-29T00:00:00+00:00"
+
+
+def test_parse_so_dedicated_news_results() -> None:
+    payload = """
+    <ul id="news">
+      <li class="full-txt res-list" data-url="https://news.example.com/sun-update">
+        <a href="https://news.example.com/sun-update" title="孙宇晨公开事件更新">
+          <h3><em>孙宇晨</em>公开事件更新</h3>
+          <p class="summary g-ellipsis3">公开文件披露了案件的新进度。</p>
+          <span class="g-c-gray time">5小时前</span>
+        </a>
+      </li>
+    </ul>
+    """
+
+    facts = parse_so_news_html(
+        payload,
+        persona_name="孙宇晨",
+        limit=5,
+        now=datetime(2026, 9, 1, 12, tzinfo=UTC),
+    )
+
+    assert len(facts) == 1
+    assert facts[0].title == "孙宇晨公开事件更新"
+    assert facts[0].summary == "公开文件披露了案件的新进度。"
+    assert facts[0].published_at == "2026-09-01T07:00:00+00:00"

@@ -55,7 +55,7 @@ class Settings(BaseSettings):
     # 对在世人物的近期事实使用独立网络证据层。网络内容不会自动改写稳定人格。
     web_search_enabled: bool = False
     web_search_provider: str = "so_search"
-    web_search_base_url: str = "https://www.so.com/s"
+    web_search_base_url: str = "https://news.so.com/ns"
     web_search_timeout_seconds: float = 6.0
     web_search_max_results: int = 5
 
