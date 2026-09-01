@@ -1,0 +1,14 @@
+.venv/
+.env
+.env.*
+.vefaas/
+tests/
+__pycache__/
+**/__pycache__/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+vefaas_bundle/
+*.egg-info/
+*.pyc
+.DS_Store

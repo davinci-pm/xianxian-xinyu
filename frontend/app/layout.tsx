@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import type { ReactNode } from "react";
+import AuthGate from "@/components/auth-gate";
 import SiteHeader from "@/components/site-header";
 import "./globals.css";
 
@@ -13,21 +14,25 @@ export default function RootLayout({ children }: Readonly<{ children: ReactNode 
   return (
     <html lang="zh-CN" data-scroll-behavior="smooth">
       <body>
-        <a className="skip-link" href="#main-content">跳到主要内容</a>
-        <SiteHeader />
-        {children}
-        <footer className="site-footer">
-          <div>
-            <Link href="/" className="footer-brand">先贤心语</Link>
-            <p>基于公开资料构建的 AI 思想人格，不代表人物本人或任何机构。</p>
-          </div>
-          <nav aria-label="页脚导航">
-            <Link href="/paths">思想路径</Link>
-            <Link href="/notes">心语札记</Link>
-            <Link href="/settings/memory">记忆设置</Link>
-          </nav>
-          <p>本产品不是心理治疗、医疗、法律或投资建议工具。</p>
-        </footer>
+        <AuthGate>
+          <a className="skip-link" href="#main-content">跳到主要内容</a>
+          <SiteHeader />
+          {children}
+          <footer className="site-footer">
+            <div>
+              <Link href="/" className="footer-brand">先贤心语</Link>
+              <p>基于公开资料构建的 AI 思想人格，不代表人物本人或任何机构。</p>
+            </div>
+            <nav aria-label="页脚导航">
+              <Link href="/paths">思想路径</Link>
+              <Link href="/notes">心语札记</Link>
+              <Link href="/me">我的心智分身</Link>
+              <Link href="/studio">女娲工坊</Link>
+              <Link href="/settings/memory">记忆设置</Link>
+            </nav>
+            <p>本产品不是心理治疗、医疗、法律或投资建议工具。</p>
+          </footer>
+        </AuthGate>
       </body>
     </html>
   );

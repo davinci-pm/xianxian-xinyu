@@ -1,3 +1,4 @@
+import re
 from dataclasses import dataclass
 
 
@@ -9,22 +10,63 @@ class SafetyAssessment:
     should_break_role: bool
 
 
-HIGH_RISK_TERMS = (
-    "想自杀",
-    "不想活了",
-    "结束生命",
-    "自残",
-    "跳楼",
-    "割腕",
-    "活着没意义",
+SELF_HARM_TERMS = ("自杀", "结束生命", "自残", "跳楼", "割腕", "伤害自己")
+DISTRESS_TERMS = ("不想活了", "活着没意义", "活不下去", "崩溃", "绝望", "极端痛苦")
+IMMEDIACY_TERMS = ("现在", "马上", "立刻", "立即", "今晚", "今天", "此刻", "正在", "已经")
+ACTION_TERMS = ("要", "会", "打算", "准备", "决定", "计划", "就去", "正在", "已经")
+CONTEXTUAL_MARKERS = (
+    "小说",
+    "电影",
+    "新闻",
+    "论文",
+    "研究",
+    "历史",
+    "故事",
+    "角色",
+    "主人公",
+    "书里",
+    "引用",
+    "假设",
+    "案例",
+    "讨论",
+    "测试",
+    "敏感词",
+    "想知道",
+    "为什么",
+    "如何看待",
+    "怎么看",
+    "了解",
+    "朋友说",
+    "他说",
+    "她说",
 )
-DISTRESS_TERMS = ("崩溃", "绝望", "活不下去", "极端痛苦")
+PAST_CONTEXT_MARKERS = ("曾经", "以前", "过去", "有过", "小时候", "多年前")
+NEGATED_SELF_HARM_TERMS = (
+    "没有想自杀",
+    "没想自杀",
+    "不想自杀",
+    "不会自杀",
+    "不打算自杀",
+    "没有自残",
+    "不会自残",
+    "不打算自残",
+    "没有结束生命的想法",
+    "没有伤害自己的打算",
+    "不会伤害自己",
+    "没有立即行动",
+    "不会立即行动",
+)
 SAFETY_CONFIRMATION_TERMS = (
     "我现在安全",
     "我目前安全",
     "我没有立即行动的打算",
     "我没有马上伤害自己的打算",
     "现在没有危险",
+    "我不会行动",
+    "我不会伤害自己",
+    "我身边有人",
+    "已经联系了家人",
+    "已经联系了朋友",
 )
 IMMEDIATE_DANGER_CONFIRMATION_TERMS = (
     "我有立即行动的打算",
@@ -34,30 +76,66 @@ IMMEDIATE_DANGER_CONFIRMATION_TERMS = (
 
 
 def _normalize(content: str) -> str:
-    return content.replace(" ", "").lower()
+    return re.sub(r"[\s，。！？、,.!?；;：:'\"“”‘’（）()]", "", content).lower()
+
+
+def _is_imminent_first_person_danger(normalized: str) -> bool:
+    if any(marker in normalized for marker in CONTEXTUAL_MARKERS) or any(
+        marker in normalized for marker in PAST_CONTEXT_MARKERS
+    ):
+        return False
+    has_immediate = any(term in normalized for term in IMMEDIACY_TERMS)
+    has_action = any(term in normalized for term in ACTION_TERMS)
+    has_first_person_risk = any(
+        re.search(
+            rf"我(?!的?(?:朋友|家人|同学|同事|孩子|伴侣)).{{0,16}}{re.escape(term)}",
+            normalized,
+        )
+        for term in SELF_HARM_TERMS
+    )
+    return has_immediate and has_action and has_first_person_risk
+
+
+def _has_negated_self_harm(normalized: str) -> bool:
+    return any(term in normalized for term in NEGATED_SELF_HARM_TERMS) or any(
+        re.search(rf"(?:没有|没|不会|不打算|不准备).{{0,8}}{re.escape(term)}", normalized)
+        for term in SELF_HARM_TERMS
+    )
 
 
 def assess_safety(content: str) -> SafetyAssessment:
     normalized = _normalize(content)
-    for term in HIGH_RISK_TERMS:
-        if term in normalized:
-            return SafetyAssessment("L3", "self_harm", term, True)
-    for term in DISTRESS_TERMS:
-        if term in normalized:
-            return SafetyAssessment("L2", "severe_distress", term, True)
+    if _has_negated_self_harm(normalized):
+        return SafetyAssessment("L0", "none", "explicit_negation", False)
+    if any(marker in normalized for marker in CONTEXTUAL_MARKERS) or any(
+        marker in normalized for marker in PAST_CONTEXT_MARKERS
+    ):
+        return SafetyAssessment("L0", "none", "contextual_or_past_reference", False)
+    if _is_imminent_first_person_danger(normalized):
+        return SafetyAssessment("L3", "imminent_self_harm", "semantic_imminence", True)
+    if any(term in normalized for term in SELF_HARM_TERMS) or any(
+        term in normalized for term in DISTRESS_TERMS
+    ):
+        return SafetyAssessment(
+            "L2", "distress_or_sensitive_context", "support_without_pause", False
+        )
     return SafetyAssessment("L0", "none", "none", False)
 
 
 def confirms_current_safety(content: str) -> bool:
     normalized = _normalize(content)
-    return any(term in normalized for term in SAFETY_CONFIRMATION_TERMS)
+    return _has_negated_self_harm(normalized) or any(
+        term in normalized for term in SAFETY_CONFIRMATION_TERMS
+    )
 
 
 def confirms_immediate_danger(content: str) -> bool:
     normalized = _normalize(content)
     if confirms_current_safety(content):
         return False
-    return any(term in normalized for term in IMMEDIATE_DANGER_CONFIRMATION_TERMS)
+    return assess_safety(content).should_break_role or any(
+        term in normalized for term in IMMEDIATE_DANGER_CONFIRMATION_TERMS
+    )
 
 
 def crisis_response(level: str) -> str:

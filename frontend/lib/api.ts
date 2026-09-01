@@ -4,11 +4,18 @@ import type {
   ConversationDetail,
   ConversationSummary,
   MemoryItem,
+  OwnedPersona,
   PersonaCard,
   PersonaDetail,
   StreamEvent,
   SessionInfo,
   SkillInfo,
+  StudioDistillationResult,
+  StudioFeedback,
+  StudioHealthReport,
+  StudioProject,
+  StudioPipelineStatus,
+  StudioSource,
 } from "@/lib/types";
 
 const BASE = "/api/backend";
@@ -19,12 +26,22 @@ async function jsonRequest<T>(path: string, init?: RequestInit): Promise<T> {
     headers: { "Content-Type": "application/json", ...init?.headers },
     credentials: "same-origin",
   });
-  if (!response.ok) throw new Error(`API ${response.status}`);
+  if (!response.ok) {
+    const payload = await response.json().catch(() => null) as { detail?: string } | null;
+    throw new Error(payload?.detail ?? `API ${response.status}`);
+  }
+  if (response.status === 204) return undefined as T;
   return (await response.json()) as T;
 }
 
 export const api = {
   session: () => jsonRequest<SessionInfo>("/session"),
+  login: (inviteCode: string) =>
+    jsonRequest<SessionInfo>("/auth/login", {
+      method: "POST",
+      body: JSON.stringify({ invite_code: inviteCode }),
+    }),
+  logout: () => jsonRequest<void>("/auth/logout", { method: "POST" }),
   personas: () => jsonRequest<PersonaCard[]>("/personas"),
   persona: (slug: string) => jsonRequest<PersonaDetail>(`/personas/${slug}`),
   conversations: () => jsonRequest<ConversationSummary[]>("/conversations"),
@@ -40,7 +57,77 @@ export const api = {
       body: JSON.stringify({ action }),
     }),
   memories: () => jsonRequest<MemoryItem[]>("/memories"),
+  updateMemory: (id: string, payload: { content?: string; paused?: boolean }) =>
+    jsonRequest<MemoryItem>(`/memories/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    }),
+  deleteMemory: (id: string) =>
+    jsonRequest<void>(`/memories/${id}`, { method: "DELETE" }),
   skills: () => jsonRequest<SkillInfo[]>("/skills"),
+  studioProjects: () => jsonRequest<StudioProject[]>("/studio/projects"),
+  createStudioProject: (payload: {
+    name: string;
+    target_type: string;
+    relationship: string;
+    purpose: string;
+    language: string;
+  }) => jsonRequest<StudioProject>("/studio/projects", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  }),
+  addStudioSource: (projectId: string, payload: {
+    filename: string;
+    source_type: string;
+    mime_type: string;
+    content: string;
+    target_speaker: string | null;
+    time_range: string | null;
+    source_url: string | null;
+    published_at: string | null;
+    rights_confirmed: boolean;
+  }) => jsonRequest<StudioSource>(`/studio/projects/${projectId}/sources`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  }),
+  analyzeStudioProject: (projectId: string, payload: {
+    core_values: string;
+    decision_case: string;
+    never_do: string;
+    unlike_response: string;
+  }) => jsonRequest<StudioHealthReport>(`/studio/projects/${projectId}/health`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  }),
+  distillStudioProject: (projectId: string, payload: {
+    core_values: string;
+    decision_case: string;
+    never_do: string;
+    unlike_response: string;
+  }) => jsonRequest<StudioDistillationResult>(`/studio/projects/${projectId}/distill`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  }),
+  studioPipeline: (projectId: string) =>
+    jsonRequest<StudioPipelineStatus>(`/studio/projects/${projectId}/pipeline`),
+  createStudioFeedback: (projectId: string, payload: {
+    feedback_type: "fact_error" | "unlike" | "missing_context" | "better_response";
+    content: string;
+    target_artifact_id?: string | null;
+  }) => jsonRequest<StudioFeedback>(`/studio/projects/${projectId}/feedback`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  }),
+  reviewStudioFeedback: (projectId: string, feedbackId: string, action: "approve" | "reject") =>
+    jsonRequest<StudioFeedback>(`/studio/projects/${projectId}/feedback/${feedbackId}/review`, {
+      method: "POST",
+      body: JSON.stringify({ action }),
+    }),
+  regenerateStudioPersona: (projectId: string) =>
+    jsonRequest<StudioDistillationResult>(`/studio/projects/${projectId}/regenerate`, {
+      method: "POST",
+    }),
+  ownedPersonas: () => jsonRequest<OwnedPersona[]>("/me/personas"),
   async *sendMessage(
     conversationId: string,
     content: string,

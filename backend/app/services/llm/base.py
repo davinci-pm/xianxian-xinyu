@@ -15,8 +15,10 @@ class GenerationContext:
     recent_messages: list[dict[str, str]] = field(default_factory=list)
     memories: list[str] = field(default_factory=list)
     knowledge: list[dict[str, str]] = field(default_factory=list)
+    web_facts: list[dict[str, str | None]] = field(default_factory=list)
     skill_instructions: list[str] = field(default_factory=list)
     intent_analysis: dict[str, Any] = field(default_factory=dict)
+    generation_plan: dict[str, Any] = field(default_factory=dict)
 
 
 class ModelProvider(Protocol):

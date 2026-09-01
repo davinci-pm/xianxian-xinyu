@@ -15,6 +15,7 @@ export async function* readSse(response: Response): AsyncGenerator<StreamEvent> 
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
+  let completed = false;
   while (true) {
     const { done, value } = await reader.read();
     buffer += decoder.decode(value, { stream: !done }).replaceAll("\r\n", "\n");
@@ -22,13 +23,19 @@ export async function* readSse(response: Response): AsyncGenerator<StreamEvent> 
     buffer = blocks.pop() ?? "";
     for (const block of blocks) {
       const parsed = parseSseBlock(block);
-      if (parsed) yield parsed;
+      if (parsed) {
+        if (parsed.event === "done") completed = true;
+        yield parsed;
+      }
     }
     if (done) break;
   }
   if (buffer.trim()) {
     const parsed = parseSseBlock(buffer);
-    if (parsed) yield parsed;
+    if (parsed) {
+      if (parsed.event === "done") completed = true;
+      yield parsed;
+    }
   }
+  if (!completed) throw new Error("对话流在完成前中断");
 }
-

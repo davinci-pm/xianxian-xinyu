@@ -1,7 +1,10 @@
 import asyncio
+import hashlib
 import json
+import re
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
+from pathlib import Path
 from time import monotonic
 from typing import Any
 
@@ -16,11 +19,18 @@ from app.core.rate_limit import rate_limiter
 from app.db.session import get_db
 from app.models import (
     Conversation,
+    DistillationJob,
     GenerationRun,
     KnowledgeDocument,
     Memory,
     Message,
     Persona,
+    PersonaClaim,
+    PersonaCognitiveArtifact,
+    PersonaFeedback,
+    PersonaProject,
+    PersonaSourceFile,
+    PersonaVersion,
     SafetyEvent,
     SkillConfig,
 )
@@ -31,23 +41,51 @@ from app.schemas.api import (
     ConversationCreateResponse,
     ConversationDetail,
     ConversationSummary,
+    InviteLoginRequest,
     MemoryConfirmRequest,
     MemoryResponse,
+    MemoryUpdateRequest,
     MessageResponse,
+    OwnedPersonaResponse,
     PersonaCard,
     PersonaDetail,
     SessionResponse,
     SkillResponse,
     SourceItem,
+    StudioCalibration,
+    StudioClaimResponse,
+    StudioDistillationResponse,
+    StudioFeedbackCreate,
+    StudioFeedbackResponse,
+    StudioFeedbackReview,
+    StudioHealthReport,
+    StudioPipelineResponse,
+    StudioProjectCreate,
+    StudioProjectResponse,
+    StudioSourceCreate,
+    StudioSourceResponse,
+)
+from app.services.auth import (
+    attach_visitor_to_user,
+    encode_session_cookie,
+    get_or_create_invite_user,
+    match_invite_code,
 )
 from app.services.conversation_director import DialogueStage, conversation_director
+from app.services.generation_planner import plan_generation
 from app.services.intent_classifier import analyze_intent
 from app.services.knowledge import KnowledgeHit, retrieve_knowledge
 from app.services.llm.base import GenerationContext
 from app.services.llm.factory import get_model_provider
 from app.services.llm.openai_compatible import EmptyModelContentError
-from app.services.memory import confirm_memory, extract_memory_candidate, list_confirmed_memories
-from app.services.persona_loader import PersonaPack, load_persona_pack
+from app.services.memory import confirm_memory, create_memory_candidate, list_confirmed_memories
+from app.services.persona_distillation import (
+    DistillationInputError,
+    analyze_project_health,
+    distill_project,
+)
+from app.services.persona_loader import PersonaPack
+from app.services.persona_runtime import load_runtime_persona_pack
 from app.services.safety import (
     SafetyAssessment,
     assess_safety,
@@ -59,6 +97,7 @@ from app.services.safety import (
     safety_recovery_response,
 )
 from app.services.skill_adapter import skill_adapter
+from app.services.web_facts import WebFact, needs_web_context, search_current_facts
 
 router = APIRouter()
 
@@ -128,7 +167,13 @@ def _conversation_detail(
             .order_by(Memory.created_at.desc())
         )
     )
-    confirmed = list_confirmed_memories(db, conversation.visitor_id, persona.id)
+    confirmed = list_confirmed_memories(
+        db,
+        conversation.visitor_id,
+        persona.id,
+        user_id=conversation.user_id,
+        conversation_id=conversation.id,
+    )
     return ConversationDetail(
         id=conversation.id,
         persona=_persona_card(persona),
@@ -149,7 +194,7 @@ def _set_visitor_cookie(response: Response, identity: VisitorIdentity) -> None:
     settings = get_settings()
     response.set_cookie(
         key=settings.cookie_name,
-        value=identity.visitor.id,
+        value=encode_session_cookie(identity.visitor.id),
         httponly=True,
         samesite="lax",
         secure=settings.cookie_secure,
@@ -157,10 +202,18 @@ def _set_visitor_cookie(response: Response, identity: VisitorIdentity) -> None:
     )
 
 
-def _owned_conversation(db: Session, conversation_id: str, visitor_id: str) -> Conversation:
+def _owned_conversation(
+    db: Session, conversation_id: str, identity: VisitorIdentity
+) -> Conversation:
+    owner_filter = (
+        Conversation.user_id == identity.user.id
+        if identity.user
+        else Conversation.visitor_id == identity.visitor.id
+    )
     conversation = db.scalar(
         select(Conversation).where(
-            Conversation.id == conversation_id, Conversation.visitor_id == visitor_id
+            Conversation.id == conversation_id,
+            owner_filter,
         )
     )
     if conversation is None:
@@ -168,52 +221,646 @@ def _owned_conversation(db: Session, conversation_id: str, visitor_id: str) -> C
     return conversation
 
 
-def _owned_memory(db: Session, memory_id: str, visitor_id: str) -> Memory:
-    memory = db.scalar(
-        select(Memory).where(Memory.id == memory_id, Memory.visitor_id == visitor_id)
+def _owned_memory(db: Session, memory_id: str, identity: VisitorIdentity) -> Memory:
+    owner_filter = (
+        Memory.user_id == identity.user.id
+        if identity.user
+        else Memory.visitor_id == identity.visitor.id
     )
+    memory = db.scalar(select(Memory).where(Memory.id == memory_id, owner_filter))
     if memory is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="未找到该记忆")
     return memory
+
+
+def _owned_project(db: Session, project_id: str, identity: VisitorIdentity) -> PersonaProject:
+    if identity.user is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="请先登录")
+    project = db.scalar(
+        select(PersonaProject).where(
+            PersonaProject.id == project_id,
+            PersonaProject.owner_user_id == identity.user.id,
+        )
+    )
+    if project is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="未找到该人物草稿")
+    return project
+
+
+def _require_persona_access(persona: Persona, identity: VisitorIdentity) -> None:
+    if persona.origin_type != "user_created" or persona.visibility == "public":
+        return
+    if identity.user is None or persona.owner_user_id != identity.user.id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="未找到该人物")
+
+
+def _studio_source_response(source: PersonaSourceFile) -> StudioSourceResponse:
+    return StudioSourceResponse.model_validate(source)
+
+
+def _studio_claim_response(claim: PersonaClaim) -> StudioClaimResponse:
+    try:
+        evidence = json.loads(claim.evidence_json)
+    except json.JSONDecodeError:
+        evidence = []
+    return StudioClaimResponse(
+        id=claim.id,
+        claim_type=claim.claim_type,
+        content=claim.content,
+        confidence=claim.confidence,
+        review_status=claim.review_status,
+        evidence_count=len(evidence) if isinstance(evidence, list) else 0,
+    )
+
+
+def _studio_project_response(db: Session, project: PersonaProject) -> StudioProjectResponse:
+    sources = list(
+        db.scalars(
+            select(PersonaSourceFile)
+            .where(PersonaSourceFile.project_id == project.id)
+            .order_by(PersonaSourceFile.created_at, PersonaSourceFile.id)
+        )
+    )
+    claims = list(
+        db.scalars(
+            select(PersonaClaim)
+            .where(PersonaClaim.project_id == project.id)
+            .order_by(PersonaClaim.created_at, PersonaClaim.id)
+        )
+    )
+    persona = db.get(Persona, project.persona_id) if project.persona_id else None
+    return StudioProjectResponse(
+        id=project.id,
+        name=project.name,
+        target_type=project.target_type,
+        relationship=project.relationship,
+        purpose=project.purpose,
+        language=project.language,
+        visibility=project.visibility,
+        status=project.status,
+        source_char_count=project.source_char_count,
+        quality_score=project.quality_score,
+        persona_slug=persona.slug if persona else None,
+        sources=[_studio_source_response(source) for source in sources],
+        claims=[_studio_claim_response(claim) for claim in claims],
+        created_at=project.created_at,
+        updated_at=project.updated_at,
+    )
 
 
 def _sse(event: str, data: dict[str, Any]) -> str:
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 
+def _expand_retrieval_query(query: str) -> str:
+    origin_markers = (
+        "为什么进入",
+        "怎么进入",
+        "如何进入",
+        "为什么做",
+        "为什么创立",
+        "创立原因",
+        "最初动机",
+        "起源",
+        "契机",
+    )
+    if any(marker in query for marker in origin_markers):
+        return f"{query}\n最初 起因 动机 契机 早期 经历 创立 原因 inspiration started"
+    return query
+
+
+def _retrieval_query(user_text: str, recent_messages: list[dict[str, str]]) -> str:
+    """Restore the subject for short follow-ups without dragging old topics forward."""
+    compact = user_text.strip()
+    noise = re.sub(r"[\s，。！？!?~～哈呵嗯哦啊欸]", "", compact)
+    clear_small_talk = {
+        "你好",
+        "在吗",
+        "早安",
+        "晚安",
+        "谢谢",
+        "谢啦",
+        "吃什么",
+        "天气怎么样",
+    }
+    if compact in clear_small_talk or not noise or re.fullmatch(r"(.)\1{2,}", compact):
+        return ""
+    continuation_markers = (
+        "这个",
+        "那个",
+        "为什么",
+        "然后呢",
+        "继续",
+        "具体呢",
+        "怎么说",
+        "那我",
+        "所以呢",
+    )
+    if len(compact) > 28 and not any(marker in compact for marker in continuation_markers):
+        return _expand_retrieval_query(compact)
+    previous_user = next(
+        (
+            message["content"]
+            for message in reversed(recent_messages)
+            if message.get("role") == "user" and message.get("content")
+        ),
+        "",
+    )
+    if not previous_user and compact in {
+        "为什么",
+        "怎么办",
+        "然后呢",
+        "继续",
+        "具体呢",
+        "是吗",
+        "对吗",
+    }:
+        return ""
+    return _expand_retrieval_query(f"{previous_user[-500:]}\n{compact}".strip())
+
+
+async def _stream_with_heartbeats(
+    source: AsyncIterator[str], *, interval_seconds: float = 3.0
+) -> AsyncIterator[str]:
+    """Keep the browser connection visibly alive while preprocessing or reasoning."""
+    queue: asyncio.Queue[tuple[str, str | Exception | None]] = asyncio.Queue()
+
+    async def pump() -> None:
+        try:
+            async for event in source:
+                await queue.put(("event", event))
+        except Exception as exc:
+            await queue.put(("error", exc))
+        else:
+            await queue.put(("done", None))
+
+    producer = asyncio.create_task(pump())
+    phase = "preparing"
+    try:
+        while True:
+            try:
+                kind, payload = await asyncio.wait_for(queue.get(), timeout=interval_seconds)
+            except TimeoutError:
+                yield _sse("heartbeat", {"phase": phase})
+                continue
+            if kind == "done":
+                return
+            if kind == "error":
+                assert isinstance(payload, Exception)
+                raise payload
+            assert isinstance(payload, str)
+            if payload.startswith("event: chunk\n"):
+                phase = "writing"
+            yield payload
+    finally:
+        if not producer.done():
+            producer.cancel()
+        try:
+            await producer
+        except asyncio.CancelledError:
+            pass
+
+
 @router.get("/session", response_model=SessionResponse)
 def get_session(
     request: Request, response: Response, db: Session = Depends(get_db)
 ) -> SessionResponse:
-    identity = resolve_visitor(request, db)
+    identity = resolve_visitor(request, db, require_auth=False)
     _set_visitor_cookie(response, identity)
     return SessionResponse(
-        authenticated=identity.visitor.user_id is not None,
+        authenticated=identity.authenticated,
+        auth_required=get_settings().auth_required,
         locale=identity.visitor.locale,
-        long_memory_available=identity.visitor.user_id is not None,
+        long_memory_available=identity.authenticated,
+        display_name=identity.user.display_name if identity.user else None,
     )
+
+
+@router.post("/auth/login", response_model=SessionResponse)
+def login_with_invite(
+    payload: InviteLoginRequest,
+    request: Request,
+    response: Response,
+    db: Session = Depends(get_db),
+) -> SessionResponse:
+    client_host = request.client.host if request.client else "unknown"
+    rate_limiter.check(f"invite-login:{client_host}")
+    match = match_invite_code(payload.invite_code)
+    if match is None:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="邀请码无效")
+    identity = resolve_visitor(request, db, require_auth=False)
+    user = get_or_create_invite_user(db, match)
+    attach_visitor_to_user(db, identity.visitor, user)
+    db.commit()
+    authenticated = VisitorIdentity(visitor=identity.visitor, user=user, cookie_created=True)
+    _set_visitor_cookie(response, authenticated)
+    return SessionResponse(
+        authenticated=True,
+        auth_required=get_settings().auth_required,
+        locale=user.locale,
+        long_memory_available=user.long_memory_enabled,
+        display_name=user.display_name,
+    )
+
+
+@router.post("/auth/logout", status_code=status.HTTP_204_NO_CONTENT)
+def logout(response: Response) -> Response:
+    settings = get_settings()
+    response.delete_cookie(
+        settings.cookie_name,
+        httponly=True,
+        secure=settings.cookie_secure,
+        samesite="lax",
+    )
+    return response
+
+
+@router.get("/studio/projects", response_model=list[StudioProjectResponse])
+def list_studio_projects(
+    request: Request, db: Session = Depends(get_db)
+) -> list[StudioProjectResponse]:
+    identity = resolve_visitor(request, db, require_auth=True)
+    assert identity.user is not None
+    projects = list(
+        db.scalars(
+            select(PersonaProject)
+            .where(PersonaProject.owner_user_id == identity.user.id)
+            .order_by(PersonaProject.updated_at.desc())
+        )
+    )
+    return [_studio_project_response(db, project) for project in projects]
+
+
+@router.post(
+    "/studio/projects",
+    response_model=StudioProjectResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_studio_project(
+    payload: StudioProjectCreate,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> StudioProjectResponse:
+    identity = resolve_visitor(request, db, require_auth=True)
+    assert identity.user is not None
+    rate_limiter.check(f"studio-project:{identity.user.id}")
+    project = PersonaProject(
+        owner_user_id=identity.user.id,
+        name=payload.name.strip(),
+        target_type=payload.target_type,
+        relationship=payload.relationship.strip(),
+        purpose=payload.purpose.strip(),
+        language=payload.language,
+        visibility="private",
+        status="draft",
+    )
+    db.add(project)
+    db.commit()
+    db.refresh(project)
+    return _studio_project_response(db, project)
+
+
+@router.get("/studio/projects/{project_id}", response_model=StudioProjectResponse)
+def get_studio_project(
+    project_id: str,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> StudioProjectResponse:
+    identity = resolve_visitor(request, db, require_auth=True)
+    project = _owned_project(db, project_id, identity)
+    return _studio_project_response(db, project)
+
+
+@router.post(
+    "/studio/projects/{project_id}/sources",
+    response_model=StudioSourceResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def add_studio_source(
+    project_id: str,
+    payload: StudioSourceCreate,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> StudioSourceResponse:
+    identity = resolve_visitor(request, db, require_auth=True)
+    project = _owned_project(db, project_id, identity)
+    assert identity.user is not None
+    rate_limiter.check(f"studio-source:{identity.user.id}")
+    filename = payload.filename.strip()
+    if Path(filename).name != filename or any(ord(char) < 32 for char in filename):
+        raise HTTPException(status_code=422, detail="资料文件名不合法")
+    if Path(filename).suffix.lower() not in {".txt", ".md", ".csv", ".json", ".jsonl"}:
+        raise HTTPException(
+            status_code=415,
+            detail="内测版仅支持 TXT、Markdown、CSV、JSON 和 JSONL",
+        )
+    if not payload.rights_confirmed:
+        raise HTTPException(status_code=422, detail="请先确认你有权使用这份资料")
+    content = payload.content.replace("\x00", "").strip()
+    content_hash = hashlib.sha256(content.encode()).hexdigest()
+    duplicate = db.scalar(
+        select(PersonaSourceFile).where(
+            PersonaSourceFile.project_id == project.id,
+            PersonaSourceFile.content_hash == content_hash,
+        )
+    )
+    if duplicate is not None:
+        raise HTTPException(status_code=409, detail="这份资料已经上传过了")
+    source = PersonaSourceFile(
+        project_id=project.id,
+        filename=filename,
+        source_type=payload.source_type,
+        mime_type=payload.mime_type,
+        content=content,
+        char_count=len(content),
+        content_hash=content_hash,
+        target_speaker=payload.target_speaker.strip() if payload.target_speaker else None,
+        time_range=payload.time_range.strip() if payload.time_range else None,
+        source_url=str(payload.source_url).strip() if payload.source_url else None,
+        published_at=payload.published_at.strip() if payload.published_at else None,
+        rights_confirmed=True,
+        status="ready",
+    )
+    db.add(source)
+    project.status = "sources_ready"
+    project.source_char_count += len(content)
+    db.commit()
+    db.refresh(source)
+    return _studio_source_response(source)
+
+
+@router.post(
+    "/studio/projects/{project_id}/health",
+    response_model=StudioHealthReport,
+)
+def analyze_studio_project(
+    project_id: str,
+    payload: StudioCalibration,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> StudioHealthReport:
+    identity = resolve_visitor(request, db, require_auth=True)
+    project = _owned_project(db, project_id, identity)
+    sources = list(
+        db.scalars(
+            select(PersonaSourceFile)
+            .where(PersonaSourceFile.project_id == project.id)
+            .order_by(PersonaSourceFile.created_at, PersonaSourceFile.id)
+        )
+    )
+    return StudioHealthReport.model_validate(analyze_project_health(sources, payload.model_dump()))
+
+
+@router.post(
+    "/studio/projects/{project_id}/distill",
+    response_model=StudioDistillationResponse,
+)
+def run_studio_distillation(
+    project_id: str,
+    payload: StudioCalibration,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> StudioDistillationResponse:
+    identity = resolve_visitor(request, db, require_auth=True)
+    project = _owned_project(db, project_id, identity)
+    assert identity.user is not None
+    rate_limiter.check(f"studio-distill:{identity.user.id}")
+    try:
+        persona, version, job = distill_project(
+            db,
+            project,
+            owner_user_id=identity.user.id,
+            calibration=payload.model_dump(),
+        )
+        db.commit()
+    except DistillationInputError as exc:
+        db.rollback()
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    db.refresh(project)
+    return StudioDistillationResponse(
+        project=_studio_project_response(db, project),
+        persona=_persona_card(persona),
+        version=version.version,
+        job_id=job.id,
+        quality_score=version.quality_score,
+        pipeline=json.loads(job.report_json),
+    )
+
+
+@router.post(
+    "/studio/projects/{project_id}/regenerate",
+    response_model=StudioDistillationResponse,
+)
+def regenerate_studio_persona(
+    project_id: str,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> StudioDistillationResponse:
+    identity = resolve_visitor(request, db, require_auth=True)
+    project = _owned_project(db, project_id, identity)
+    assert identity.user is not None
+    try:
+        calibration = json.loads(project.calibration_json)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=409, detail="项目校准数据已损坏，请重新校准") from exc
+    if not isinstance(calibration, dict) or not calibration:
+        raise HTTPException(status_code=409, detail="请先完成首次蒸馏和人工校准")
+    try:
+        persona, version, job = distill_project(
+            db,
+            project,
+            owner_user_id=identity.user.id,
+            calibration={str(key): str(value) for key, value in calibration.items()},
+        )
+        db.commit()
+    except DistillationInputError as exc:
+        db.rollback()
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    db.refresh(project)
+    return StudioDistillationResponse(
+        project=_studio_project_response(db, project),
+        persona=_persona_card(persona),
+        version=version.version,
+        job_id=job.id,
+        quality_score=version.quality_score,
+        pipeline=json.loads(job.report_json),
+    )
+
+
+@router.get(
+    "/studio/projects/{project_id}/pipeline",
+    response_model=StudioPipelineResponse,
+)
+def get_studio_pipeline(
+    project_id: str,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> StudioPipelineResponse:
+    identity = resolve_visitor(request, db, require_auth=True)
+    project = _owned_project(db, project_id, identity)
+    job = db.scalar(
+        select(DistillationJob)
+        .where(DistillationJob.project_id == project.id)
+        .order_by(DistillationJob.created_at.desc(), DistillationJob.id.desc())
+    )
+    pending_feedback = len(
+        list(
+            db.scalars(
+                select(PersonaFeedback).where(
+                    PersonaFeedback.project_id == project.id,
+                    PersonaFeedback.status == "pending",
+                )
+            )
+        )
+    )
+    if job is None:
+        return StudioPipelineResponse(
+            pipeline_version="nuwa-soul-v2",
+            status="not_started",
+            progress=0,
+            pending_feedback=pending_feedback,
+        )
+    try:
+        report = json.loads(job.report_json)
+    except json.JSONDecodeError:
+        report = {}
+    evaluation = report.get("evaluation", {}) if isinstance(report, dict) else {}
+    return StudioPipelineResponse(
+        pipeline_version=str(report.get("pipeline_version", job.pipeline_version)),
+        job_id=job.id,
+        status=job.status,
+        progress=job.progress,
+        stages=report.get("stages", []),
+        evaluation_score=evaluation.get("score"),
+        evaluation_dimensions=evaluation.get("dimensions", {}),
+        artifact_counts=report.get("artifact_counts", {}),
+        pending_feedback=pending_feedback,
+    )
+
+
+@router.post(
+    "/studio/projects/{project_id}/feedback",
+    response_model=StudioFeedbackResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_studio_feedback(
+    project_id: str,
+    payload: StudioFeedbackCreate,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> StudioFeedbackResponse:
+    identity = resolve_visitor(request, db, require_auth=True)
+    project = _owned_project(db, project_id, identity)
+    assert identity.user is not None
+    if payload.target_artifact_id:
+        artifact = db.get(PersonaCognitiveArtifact, payload.target_artifact_id)
+        if artifact is None or artifact.project_id != project.id:
+            raise HTTPException(status_code=404, detail="未找到需要纠正的认知资产")
+    persona = db.get(Persona, project.persona_id) if project.persona_id else None
+    feedback = PersonaFeedback(
+        project_id=project.id,
+        persona_version_id=persona.current_version_id if persona else None,
+        user_id=identity.user.id,
+        feedback_type=payload.feedback_type,
+        target_artifact_id=payload.target_artifact_id,
+        content=payload.content.strip(),
+        status="pending",
+    )
+    db.add(feedback)
+    db.commit()
+    db.refresh(feedback)
+    return StudioFeedbackResponse.model_validate(feedback)
+
+
+@router.post(
+    "/studio/projects/{project_id}/feedback/{feedback_id}/review",
+    response_model=StudioFeedbackResponse,
+)
+def review_studio_feedback(
+    project_id: str,
+    feedback_id: str,
+    payload: StudioFeedbackReview,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> StudioFeedbackResponse:
+    identity = resolve_visitor(request, db, require_auth=True)
+    project = _owned_project(db, project_id, identity)
+    feedback = db.get(PersonaFeedback, feedback_id)
+    if feedback is None or feedback.project_id != project.id:
+        raise HTTPException(status_code=404, detail="未找到这条人物纠正")
+    feedback.status = "approved" if payload.action == "approve" else "rejected"
+    feedback.review_note = payload.review_note.strip() if payload.review_note else None
+    feedback.reviewed_at = datetime.now(UTC)
+    if feedback.status == "approved":
+        project.status = "feedback_ready"
+    db.commit()
+    db.refresh(feedback)
+    return StudioFeedbackResponse.model_validate(feedback)
+
+
+@router.get("/me/personas", response_model=list[OwnedPersonaResponse])
+def list_owned_personas(
+    request: Request, db: Session = Depends(get_db)
+) -> list[OwnedPersonaResponse]:
+    identity = resolve_visitor(request, db, require_auth=True)
+    assert identity.user is not None
+    personas = list(
+        db.scalars(
+            select(Persona)
+            .where(
+                Persona.owner_user_id == identity.user.id,
+                Persona.origin_type == "user_created",
+            )
+            .order_by(Persona.updated_at.desc())
+        )
+    )
+    result: list[OwnedPersonaResponse] = []
+    for persona in personas:
+        version = db.get(PersonaVersion, persona.current_version_id)
+        project = db.scalar(select(PersonaProject).where(PersonaProject.persona_id == persona.id))
+        result.append(
+            OwnedPersonaResponse(
+                **_persona_card(persona).model_dump(),
+                version=version.version if version else persona.pack_version,
+                quality_score=version.quality_score if version else 0,
+                visibility=persona.visibility,
+                project_id=project.id if project else None,
+            )
+        )
+    return result
 
 
 @router.get("/personas", response_model=list[PersonaCard])
 def list_personas(db: Session = Depends(get_db)) -> list[PersonaCard]:
-    personas = list(db.scalars(select(Persona).order_by(Persona.chat_tier, Persona.name_en)))
+    personas = list(
+        db.scalars(
+            select(Persona)
+            .where(Persona.origin_type == "curated")
+            .order_by(Persona.chat_tier, Persona.name_en)
+        )
+    )
     return [_persona_card(persona) for persona in personas]
 
 
 @router.get("/personas/{slug}", response_model=PersonaDetail)
-def get_persona(slug: str, db: Session = Depends(get_db)) -> PersonaDetail:
+def get_persona(slug: str, request: Request, db: Session = Depends(get_db)) -> PersonaDetail:
     persona = db.scalar(select(Persona).where(Persona.slug == slug))
     if persona is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="未找到该人物")
-    pack = load_persona_pack(slug)
+    identity = resolve_visitor(request, db, require_auth=False)
+    _require_persona_access(persona, identity)
+    pack = load_runtime_persona_pack(db, persona)
     profile = pack.profile
+    source_conditions = [
+        KnowledgeDocument.persona_id == persona.id,
+        KnowledgeDocument.enabled.is_(True),
+    ]
+    if persona.origin_type == "user_created" and persona.current_version_id:
+        source_conditions.append(KnowledgeDocument.persona_version_id == persona.current_version_id)
     stored_sources = list(
         db.scalars(
             select(KnowledgeDocument)
-            .where(
-                KnowledgeDocument.persona_id == persona.id,
-                KnowledgeDocument.enabled.is_(True),
-            )
+            .where(*source_conditions)
             .order_by(KnowledgeDocument.title)
             .limit(20)
         )
@@ -269,8 +916,14 @@ def create_conversation(
     persona = db.scalar(select(Persona).where(Persona.slug == payload.persona_slug))
     if persona is None or persona.status != "active":
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="该人物暂不可聊天")
-    pack = load_persona_pack(persona.slug)
-    remembered = list_confirmed_memories(db, identity.visitor.id, persona.id)
+    _require_persona_access(persona, identity)
+    pack = load_runtime_persona_pack(db, persona)
+    remembered = list_confirmed_memories(
+        db,
+        identity.visitor.id,
+        persona.id,
+        user_id=identity.user.id if identity.user else None,
+    )
     starter = pack.starters[0]
     opening_text = str(starter["text"])
     if remembered:
@@ -279,8 +932,9 @@ def create_conversation(
         )
     conversation = Conversation(
         visitor_id=identity.visitor.id,
-        user_id=identity.visitor.user_id,
+        user_id=identity.user.id if identity.user else None,
         persona_id=persona.id,
+        persona_version_id=persona.current_version_id,
         title=f"与{persona.name_zh}的对话",
         stage=DialogueStage.IDENTIFY_PROBLEM,
     )
@@ -316,7 +970,11 @@ def list_conversations(
     rows = db.execute(
         select(Conversation, Persona)
         .join(Persona, Persona.id == Conversation.persona_id)
-        .where(Conversation.visitor_id == identity.visitor.id)
+        .where(
+            Conversation.user_id == identity.user.id
+            if identity.user
+            else Conversation.visitor_id == identity.visitor.id
+        )
         .order_by(Conversation.last_message_at.desc())
     ).all()
     return [
@@ -342,7 +1000,7 @@ def get_conversation(
     db: Session = Depends(get_db),
 ) -> ConversationDetail:
     identity = resolve_visitor(request, db)
-    conversation = _owned_conversation(db, conversation_id, identity.visitor.id)
+    conversation = _owned_conversation(db, conversation_id, identity)
     persona = db.get(Persona, conversation.persona_id)
     if persona is None:
         raise HTTPException(status_code=500, detail="会话人物数据缺失")
@@ -359,11 +1017,11 @@ def stream_message(
 ) -> StreamingResponse:
     identity = resolve_visitor(request, db)
     rate_limiter.check(f"chat:{identity.visitor.id}")
-    conversation = _owned_conversation(db, conversation_id, identity.visitor.id)
+    conversation = _owned_conversation(db, conversation_id, identity)
     persona = db.get(Persona, conversation.persona_id)
     if persona is None:
         raise HTTPException(status_code=500, detail="会话人物数据缺失")
-    pack = load_persona_pack(persona.slug)
+    pack = load_runtime_persona_pack(db, persona, conversation.persona_version_id)
 
     existing = db.scalar(
         select(Message).where(
@@ -392,14 +1050,16 @@ def stream_message(
                     {"message": _message_response(replay).model_dump(mode="json"), "replay": True},
                 )
                 return
-        async for event in _generate_reply(
+        source = _generate_reply(
             db=db,
             identity=identity,
             conversation=conversation,
             persona=persona,
             pack=pack,
             payload=payload,
-        ):
+            existing_user_message=existing,
+        )
+        async for event in _stream_with_heartbeats(source):
             yield event
 
     response = StreamingResponse(
@@ -419,17 +1079,21 @@ async def _generate_reply(
     persona: Persona,
     pack: PersonaPack,
     payload: ChatMessageCreate,
+    existing_user_message: Message | None = None,
 ) -> AsyncIterator[str]:
     turn_started = monotonic()
-    user_message = Message(
-        conversation_id=conversation.id,
-        role="user",
-        content=payload.content.strip(),
-        stage=conversation.stage,
-        idempotency_key=payload.idempotency_key,
-    )
-    db.add(user_message)
-    db.flush()
+    if existing_user_message is None:
+        user_message = Message(
+            conversation_id=conversation.id,
+            role="user",
+            content=payload.content.strip(),
+            stage=conversation.stage,
+            idempotency_key=payload.idempotency_key,
+        )
+        db.add(user_message)
+        db.flush()
+    else:
+        user_message = existing_user_message
     assessment = assess_safety(user_message.content)
     if conversation.stage == DialogueStage.SAFETY and confirms_immediate_danger(
         user_message.content
@@ -517,23 +1181,74 @@ async def _generate_reply(
         )
     )
     recent.reverse()
-    recent_payload = [
-        {"role": message.role, "content": message.content} for message in recent
-    ]
+    recent_payload = [{"role": message.role, "content": message.content} for message in recent]
     intent_task = asyncio.create_task(analyze_intent(user_message.content, recent_payload))
-    # 先让远端意图请求发出，再并行完成本地记忆与 RAG；避免把两段耗时串联。
+    web_started = monotonic()
+    web_search_attempted = persona.is_living and needs_web_context(user_message.content)
+    web_entity_name = persona.name_zh
+    if web_search_attempted and persona.slug.startswith("created-"):
+        source_speaker = db.scalar(
+            select(PersonaSourceFile.target_speaker)
+            .join(PersonaProject, PersonaSourceFile.project_id == PersonaProject.id)
+            .where(
+                PersonaProject.persona_id == persona.id,
+                PersonaSourceFile.target_speaker.is_not(None),
+                PersonaSourceFile.target_speaker != "",
+            )
+            .limit(1)
+        )
+        if source_speaker:
+            web_entity_name = source_speaker
+    web_task = (
+        asyncio.create_task(search_current_facts(web_entity_name, user_message.content))
+        if web_search_attempted
+        else None
+    )
+    # 先让远端语义分析请求发出，再并行完成 RAG；避免把两段耗时串联。
     await asyncio.sleep(0)
-    memory_candidate = extract_memory_candidate(
+    confirmed_memories = list_confirmed_memories(
+        db,
+        identity.visitor.id,
+        persona.id,
+        user_id=identity.user.id if identity.user else None,
+        conversation_id=conversation.id,
+    )
+    retrieval_started = monotonic()
+    knowledge_query = _retrieval_query(user_message.content, recent_payload)
+    knowledge_hits = (
+        retrieve_knowledge(
+            db,
+            persona.id,
+            knowledge_query,
+            version_id=conversation.persona_version_id,
+        )
+        if knowledge_query
+        else []
+    )
+    retrieval_ms = int((monotonic() - retrieval_started) * 1000)
+    intent_result = await intent_task
+    web_facts = await web_task if web_task is not None else []
+    web_ms = int((monotonic() - web_started) * 1000) if web_task is not None else 0
+    intent_payload = intent_result.analysis.model_dump(mode="json")
+    if assessment.level != "L0":
+        intent_payload["safety_context"] = {
+            "level": assessment.level,
+            "category": assessment.category,
+            "response_mode": "stay_in_character_supportively",
+            "guidance": "完整回应主要问题；不因敏感词中断；必要时最多确认一次当前安全状况",
+        }
+    memory_candidate = create_memory_candidate(
         db,
         visitor_id=identity.visitor.id,
+        user_id=identity.user.id if identity.user else None,
         persona_id=persona.id,
         conversation_id=conversation.id,
         message=user_message,
+        should_offer=intent_result.analysis.memory_should_offer,
+        kind=intent_result.analysis.memory_kind,
+        content=intent_result.analysis.memory_content,
+        confidence=intent_result.analysis.memory_confidence,
     )
-    confirmed_memories = list_confirmed_memories(db, identity.visitor.id, persona.id)
-    knowledge_hits = retrieve_knowledge(db, persona.id, user_message.content)
-    intent_result = await intent_task
-    intent_payload = intent_result.analysis.model_dump(mode="json")
     next_stage = conversation_director.next_stage(
         conversation.stage,
         user_message.content,
@@ -545,15 +1260,23 @@ async def _generate_reply(
     )
     applied_skills: list[str] = []
     applied_skill_modes: dict[str, str] = {}
+    skill_prompt_source_chars = 0
+    skill_prompt_runtime_chars = 0
     skill_instructions: list[str] = []
     skill_failure: Exception | None = None
+    skill_started = monotonic()
     for skill_key in pack.manifest.get("skills", []):
         key = str(skill_key)
         try:
             invoked = skill_adapter.invoke(
                 db,
                 key,
-                {"persona_slug": persona.slug, "stage": next_stage},
+                {
+                    "persona_slug": persona.slug,
+                    "stage": next_stage,
+                    "user_text": user_message.content,
+                    "intent": intent_payload,
+                },
             )
         except (LookupError, PermissionError, ValueError) as exc:
             skill_failure = exc
@@ -566,6 +1289,35 @@ async def _generate_reply(
             mode = result.get("mode")
             if isinstance(mode, str):
                 applied_skill_modes[key] = mode
+            skill_prompt_source_chars += int(result.get("source_chars", len(instruction)))
+            skill_prompt_runtime_chars += int(result.get("runtime_chars", len(instruction)))
+    skill_ms = int((monotonic() - skill_started) * 1000)
+    generation_plan = plan_generation(
+        user_message.content,
+        knowledge_hits,
+        pack.manifest.get("cognitive_model", {}),
+    )
+    generation_plan["web_search_used"] = bool(web_facts)
+    generation_plan["web_search_attempted"] = web_search_attempted
+    generation_plan["web_search_status"] = (
+        "verified"
+        if web_facts
+        else "no_verified_result"
+        if web_search_attempted
+        else "not_requested"
+    )
+    generation_plan["web_fact_count"] = len(web_facts)
+    if web_facts:
+        generation_plan["answer_policy"] = (
+            f"{generation_plan['answer_policy']} 先说明网络事实的公开来源和时间边界，"
+            "再与稳定人格中的判断方式分开表达；不得把公开报道写成真人实时自述。"
+        )
+    elif web_search_attempted:
+        generation_plan["answer_policy"] = (
+            f"{generation_plan['answer_policy']} 本轮已尝试联网，但没有拿到可核验的新来源。"
+            "必须明确说明这一点；上传资料只能标成既有资料，禁止称为‘最近报道’、"
+            "‘最新消息’或暗示已经取得实时事实。"
+        )
     context = GenerationContext(
         persona_slug=persona.slug,
         persona_name=persona.name_zh,
@@ -591,8 +1343,10 @@ async def _generate_reply(
             }
             for hit in knowledge_hits
         ],
+        web_facts=[fact.as_dict() for fact in web_facts],
         skill_instructions=skill_instructions,
         intent_analysis=intent_payload,
+        generation_plan=generation_plan,
     )
     # 记忆候选一旦通过 SSE 展示，确认接口就必须能在另一个事务中读到它。
     # 同时先持久化用户消息，即使后续模型连接中断也不会丢失输入。
@@ -616,7 +1370,12 @@ async def _generate_reply(
                 "degraded": intent_result.degraded,
                 "latency_ms": intent_result.latency_ms,
             },
-            "performance": {"preprocessing_ms": preprocessing_ms},
+            "performance": {
+                "preprocessing_ms": preprocessing_ms,
+                "retrieval_ms": retrieval_ms,
+                "web_ms": web_ms,
+                "skill_ms": skill_ms,
+            },
             "memory_candidate": (
                 _memory_response(memory_candidate).model_dump(mode="json")
                 if memory_candidate
@@ -625,6 +1384,10 @@ async def _generate_reply(
             "applied_skills": applied_skills,
             "applied_skill_modes": applied_skill_modes,
             "skill_status": "unavailable" if skill_failure else "ready",
+            "skill_prompt": {
+                "source_chars": skill_prompt_source_chars,
+                "runtime_chars": skill_prompt_runtime_chars,
+            },
             "rag": {
                 "mode": (
                     "hybrid"
@@ -641,10 +1404,27 @@ async def _generate_reply(
                         "method": hit.retrieval_method,
                         "keyword_rank": hit.keyword_rank,
                         "vector_rank": hit.vector_rank,
+                        "vector_score": hit.vector_score,
                     }
                     for hit in knowledge_hits
                 ],
             },
+            "web": {
+                "attempted": web_search_attempted,
+                "used": bool(web_facts),
+                "status": generation_plan["web_search_status"],
+                "fact_count": len(web_facts),
+                "sources": [
+                    {
+                        "id": fact.id,
+                        "domain": fact.source_domain,
+                        "published_at": fact.published_at,
+                        "trust": fact.trust,
+                    }
+                    for fact in web_facts
+                ],
+            },
+            "generation_plan": generation_plan,
         },
     )
     try:
@@ -683,22 +1463,22 @@ async def _generate_reply(
         degraded = True
         if isinstance(exc, EmptyModelContentError):
             error_code = (
-                f"empty_content:{exc.finish_reason or 'unknown'}:"
-                f"reasoning_{exc.reasoning_chars}"
+                f"empty_content:{exc.finish_reason or 'unknown'}:reasoning_{exc.reasoning_chars}"
             )[:80]
         else:
             error_code = type(exc).__name__
-        fallback = (
-            f"我先接住你这句“{user_message.content[:80]}”。"
-            f"{pack.fallback}"
-        )
+        fallback = f"我先接住你这句“{user_message.content[:80]}”。{pack.fallback}"
         first_chunk_ms = int((monotonic() - turn_started) * 1000)
         output = [fallback]
         yield _sse("degraded", {"reason": "model_unavailable", "message": "已切换人物降级回复"})
         yield _sse("chunk", {"text": fallback})
 
     content = "".join(output)
-    citation_items = _citation_payloads(knowledge_hits) if not degraded else []
+    citation_items = (
+        [*_citation_payloads(knowledge_hits), *_web_citation_payloads(web_facts)]
+        if not degraded
+        else []
+    )
     assistant = Message(
         conversation_id=conversation.id,
         role="assistant",
@@ -766,6 +1546,21 @@ def _citation_payloads(hits: list[KnowledgeHit]) -> list[dict[str, str | None]]:
     ]
 
 
+def _web_citation_payloads(facts: list[WebFact]) -> list[dict[str, str | None]]:
+    return [
+        {
+            "document_id": fact.id,
+            "label": (
+                f"联网公开资料 · {fact.title} · {fact.published_at[:10]}"
+                if fact.published_at
+                else f"联网公开资料 · {fact.title}"
+            ),
+            "source_url": fact.source_url,
+        }
+        for fact in facts
+    ]
+
+
 @router.post("/memories/{memory_id}/confirm", response_model=MemoryResponse)
 def update_memory(
     memory_id: str,
@@ -775,7 +1570,7 @@ def update_memory(
     db: Session = Depends(get_db),
 ) -> MemoryResponse:
     identity = resolve_visitor(request, db)
-    memory = _owned_memory(db, memory_id, identity.visitor.id)
+    memory = _owned_memory(db, memory_id, identity)
     confirm_memory(memory, payload.action, payload.content)
     db.commit()
     db.refresh(memory)
@@ -791,12 +1586,50 @@ def get_memories(
     memories = list(
         db.scalars(
             select(Memory)
-            .where(Memory.visitor_id == identity.visitor.id, Memory.status == "confirmed")
+            .where(
+                Memory.user_id == identity.user.id
+                if identity.user
+                else Memory.visitor_id == identity.visitor.id,
+                Memory.scope == "long_term",
+                Memory.status.in_(("confirmed", "paused")),
+            )
             .order_by(Memory.confirmed_at.desc())
         )
     )
     _set_visitor_cookie(response, identity)
     return [_memory_response(memory) for memory in memories]
+
+
+@router.patch("/memories/{memory_id}", response_model=MemoryResponse)
+def edit_memory(
+    memory_id: str,
+    payload: MemoryUpdateRequest,
+    request: Request,
+    response: Response,
+    db: Session = Depends(get_db),
+) -> MemoryResponse:
+    identity = resolve_visitor(request, db)
+    memory = _owned_memory(db, memory_id, identity)
+    if memory.scope != "long_term" or memory.status not in {"confirmed", "paused"}:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="该记忆不可编辑")
+    if payload.content is not None:
+        memory.content = payload.content.strip()
+    if payload.paused is not None:
+        memory.status = "paused" if payload.paused else "confirmed"
+    db.commit()
+    db.refresh(memory)
+    _set_visitor_cookie(response, identity)
+    return _memory_response(memory)
+
+
+@router.delete("/memories/{memory_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_memory(memory_id: str, request: Request, db: Session = Depends(get_db)) -> None:
+    identity = resolve_visitor(request, db)
+    memory = _owned_memory(db, memory_id, identity)
+    if memory.scope != "long_term":
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="该记忆不可删除")
+    db.delete(memory)
+    db.commit()
 
 
 @router.get("/skills", response_model=list[SkillResponse])

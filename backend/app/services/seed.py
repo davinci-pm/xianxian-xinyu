@@ -1,4 +1,5 @@
 import json
+from datetime import UTC, datetime
 from typing import Any
 
 import yaml
@@ -6,7 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
-from app.models import KnowledgeDocument, Persona, SkillConfig
+from app.models import KnowledgeDocument, Persona, PersonaVersion, SkillConfig
 from app.services.persona_loader import PersonaPack, load_all_persona_packs
 
 
@@ -17,7 +18,8 @@ def _json(value: Any) -> str:
 def seed_database(db: Session) -> None:
     for pack in load_all_persona_packs():
         persona = _upsert_persona(db, pack)
-        _upsert_knowledge(db, persona, pack)
+        version = _upsert_persona_version(db, persona, pack)
+        _upsert_knowledge(db, persona, version, pack)
     _upsert_skills(db)
     _upsert_upstream_skills(db)
     db.commit()
@@ -42,11 +44,49 @@ def _upsert_persona(db: Session, pack: PersonaPack) -> Persona:
     persona.status = str(pack.manifest["status"])
     persona.is_living = bool(profile.get("is_living", False))
     persona.pack_version = str(pack.manifest["version"])
+    persona.origin_type = "curated"
+    persona.visibility = "public"
     db.flush()
     return persona
 
 
-def _upsert_knowledge(db: Session, persona: Persona, pack: PersonaPack) -> None:
+def _upsert_persona_version(db: Session, persona: Persona, pack: PersonaPack) -> PersonaVersion:
+    version_name = str(pack.manifest["version"])
+    version = db.scalar(
+        select(PersonaVersion).where(
+            PersonaVersion.persona_id == persona.id,
+            PersonaVersion.version == version_name,
+        )
+    )
+    snapshot = {
+        "manifest": pack.manifest,
+        "starters": pack.starters,
+        "sources": pack.sources,
+        "style": pack.style,
+        "fallback": pack.fallback,
+    }
+    if version is None:
+        version = PersonaVersion(
+            persona_id=persona.id,
+            version=version_name,
+            status="active",
+            snapshot_json=_json(snapshot),
+            quality_score=90 if pack.manifest["tier"] == "A" else 75,
+            activated_at=datetime.now(UTC),
+        )
+        db.add(version)
+        db.flush()
+    else:
+        version.snapshot_json = _json(snapshot)
+        version.status = "active"
+    persona.current_version_id = version.id
+    db.flush()
+    return version
+
+
+def _upsert_knowledge(
+    db: Session, persona: Persona, version: PersonaVersion, pack: PersonaPack
+) -> None:
     for source in pack.sources:
         metadata = dict(source.get("metadata", {}))
         metadata["seed_key"] = source.get("key")
@@ -60,6 +100,7 @@ def _upsert_knowledge(db: Session, persona: Persona, pack: PersonaPack) -> None:
             existing = KnowledgeDocument(persona_id=persona.id)
             db.add(existing)
         existing.title = str(source["title"])
+        existing.persona_version_id = version.id
         existing.source_type = str(source.get("source_type", "public_domain"))
         existing.source_url = source.get("source_url")
         existing.citation_label = str(source["citation_label"])

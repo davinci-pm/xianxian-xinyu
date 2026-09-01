@@ -169,6 +169,7 @@ def ingest_fengge_corpus(db: Session) -> IngestReport:
             document = KnowledgeDocument(persona_id=persona.id)
             db.add(document)
         document.title = _title(source_file)
+        document.persona_version_id = persona.current_version_id
         document.source_type = "upstream_original_skill"
         document.source_url = _source_url(source_file)
         document.citation_label = f"{_title(source_file)}（GitHub 固定版本）"
@@ -205,6 +206,7 @@ def ingest_fengge_corpus(db: Session) -> IngestReport:
                 KnowledgeChunk(
                     document_id=document.id,
                     persona_id=persona.id,
+                    persona_version_id=persona.current_version_id,
                     chunk_index=index,
                     heading=chunk.heading,
                     content=chunk.content,
@@ -265,9 +267,7 @@ def ingest_vendored_persona_corpora(db: Session) -> BatchIngestReport:
         pinned_commit = str(spec["pinned_commit"])
         license_name = str(spec["license"])
         markdown_files = sorted(
-            path
-            for path in skill_root.rglob("*.md")
-            if path.is_file() and not path.is_symlink()
+            path for path in skill_root.rglob("*.md") if path.is_file() and not path.is_symlink()
         )
         if not markdown_files or skill_root / "SKILL.md" not in markdown_files:
             raise LookupError(f"项目 Skill 缺少 SKILL.md 或知识文档：{install_dir}")
@@ -292,10 +292,10 @@ def ingest_vendored_persona_corpora(db: Session) -> BatchIngestReport:
                 db.add(document)
             label = f"{persona.name_zh}上游 Skill · {relative_path}"
             document.title = label
+            document.persona_version_id = persona.current_version_id
             document.source_type = "upstream_vendored_skill"
             document.source_url = (
-                f"https://github.com/{repository}/blob/{pinned_commit}/"
-                f"{quote(relative_path)}"
+                f"https://github.com/{repository}/blob/{pinned_commit}/{quote(relative_path)}"
             )
             document.citation_label = label
             document.license_note = f"{license_name}；上游提交固定为 {pinned_commit}。"
@@ -328,6 +328,7 @@ def ingest_vendored_persona_corpora(db: Session) -> BatchIngestReport:
                     KnowledgeChunk(
                         document_id=document.id,
                         persona_id=persona.id,
+                        persona_version_id=persona.current_version_id,
                         chunk_index=index,
                         heading=chunk.heading,
                         content=chunk.content,

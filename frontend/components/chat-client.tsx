@@ -33,6 +33,11 @@ function memoryKind(kind: string) {
   return ({ preference: "偏好", unresolved_issue: "未解决问题", personal_context: "个人背景", goal: "目标" } as Record<string, string>)[kind] ?? "对话记忆";
 }
 
+function citationSummary(citations: Citation[]) {
+  const hasWeb = citations.some((citation) => citation.label.startsWith("联网公开资料"));
+  return `本段依据 ${citations.length} 条资料${hasWeb ? " · 含联网更新" : ""}`;
+}
+
 export default function ChatClient({ conversationId }: { conversationId: string }) {
   const [conversation, setConversation] = useState<ConversationDetail | null>(null);
   const [messages, setMessages] = useState<LocalMessage[]>([]);
@@ -47,6 +52,8 @@ export default function ChatClient({ conversationId }: { conversationId: string 
   const [note, setNote] = useState("");
   const [mobileMenu, setMobileMenu] = useState(false);
   const [savingMemoryId, setSavingMemoryId] = useState<string | null>(null);
+  const [streamNotice, setStreamNotice] = useState("正在理解你的问题…");
+  const [turnTrace, setTurnTrace] = useState<{ web: boolean; webAttempted: boolean; deliberation: boolean } | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -75,25 +82,41 @@ export default function ChatClient({ conversationId }: { conversationId: string 
   const send = useCallback(async (content: string, retry?: { key: string }) => {
     const clean = content.trim();
     if (!clean || streaming || !conversation) return;
-    setInput(""); setQuickReplies([]); setStreaming(true); setDegraded(false); setError(null); setFailed(null);
+    setInput(""); setQuickReplies([]); setStreaming(true); setStreamNotice("正在理解你的问题…"); setTurnTrace(null); setDegraded(false); setError(null); setFailed(null);
     const idempotencyKey = retry?.key ?? crypto.randomUUID();
     const optimisticUser: LocalMessage = { id: `local-user-${idempotencyKey}`, role: "user", content: clean, stage: conversation.stage, citations: [], degraded: false, created_at: new Date().toISOString() };
     const placeholderId = `stream-${idempotencyKey}`;
     const placeholder: LocalMessage = { id: placeholderId, role: "assistant", content: "", stage: conversation.stage, citations: [], degraded: false, created_at: new Date().toISOString(), localStatus: "streaming" };
     setMessages((current) => appendOptimistic(current, optimisticUser, placeholder, Boolean(retry)));
     const controller = new AbortController(); abortRef.current = controller;
+    let idleTimer = window.setTimeout(() => controller.abort("idle-timeout"), 45_000);
+    const refreshIdleTimer = () => {
+      window.clearTimeout(idleTimer);
+      idleTimer = window.setTimeout(() => controller.abort("idle-timeout"), 45_000);
+    };
     try {
       for await (const event of api.sendMessage(conversationId, clean, idempotencyKey, controller.signal)) {
+        refreshIdleTimer();
         if (event.event === "meta") {
+          const web = event.data.web as { attempted?: boolean; used?: boolean } | undefined;
+          const plan = event.data.generation_plan as { deliberation_required?: boolean } | undefined;
+          const trace = { web: Boolean(web?.used), webAttempted: Boolean(web?.attempted), deliberation: Boolean(plan?.deliberation_required) };
+          setTurnTrace(trace);
+          setStreamNotice(trace.web ? "已找到近期公开资料，正在核对来源…" : trace.webAttempted ? "未发现可核验更新，正在按资料边界回应…" : trace.deliberation ? "正在按人物的判断方式推演并复核…" : "正在组织回应…");
           const candidate = event.data.memory_candidate as MemoryItem | null | undefined;
           if (candidate) setCandidates((current) => current.some((item) => item.id === candidate.id) ? current : [candidate, ...current]);
           const stage = event.data.stage;
           if (typeof stage === "string") setConversation((current) => current ? { ...current, stage } : current);
         }
         if (event.event === "chunk") {
+          setStreamNotice("回应还在继续…");
           const text = typeof event.data.text === "string" ? event.data.text : "";
           setMessages((current) => current.map((message) => message.id === placeholderId ? { ...message, content: message.content + text } : message));
         }
+        if (event.event === "heartbeat") {
+          setStreamNotice(event.data.phase === "writing" ? "回应还在继续…" : "正在认真思量…");
+        }
+        if (event.event === "retry") setStreamNotice("刚才稍有停顿，正在重新接续…");
         if (event.event === "degraded") setDegraded(true);
         if (event.event === "done") {
           const saved = event.data.message as ChatMessage;
@@ -103,14 +126,14 @@ export default function ChatClient({ conversationId }: { conversationId: string 
         }
       }
     } catch {
-      if (controller.signal.aborted) {
+      if (controller.signal.aborted && controller.signal.reason === "user") {
         setMessages((current) => current.map((message) => message.id === placeholderId ? { ...message, localStatus: "stopped", content: message.content || "已停止本轮生成。" } : message));
       } else {
-        setError("这轮对话没有完整送达。可以使用同一请求安全重试，不会重复提交你的输入。");
+        setError(controller.signal.reason === "idle-timeout" ? "这轮回应等待太久，连接可能已中断。可以安全重试，不会重复提交你的输入。" : "这轮对话没有完整送达。可以安全重试，不会重复提交你的输入。");
         setFailed({ content: clean, key: idempotencyKey });
         setMessages((current) => current.filter((message) => message.id !== placeholderId));
       }
-    } finally { abortRef.current = null; setStreaming(false); }
+    } finally { window.clearTimeout(idleTimer); abortRef.current = null; setStreaming(false); }
   }, [conversation, conversationId, streaming]);
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) { event.preventDefault(); await send(input); }
@@ -135,7 +158,7 @@ export default function ChatClient({ conversationId }: { conversationId: string 
     <main className="chat-layout-redesign" id="main-content">
       <header className="chat-mobile-header">
         <Link href={`/figures/${conversation.persona.slug}`} aria-label={`查看${name}人物资料`}><CharacterArt slug={conversation.persona.slug} name={conversation.persona.name_zh} variant="avatar" /></Link>
-        <div><strong>{name}</strong><small>{stageLabel(conversation.stage)} · AI 思想人格</small></div>
+        <div><strong>{name}</strong><small>{stageLabel(conversation.stage)}</small></div>
         <button type="button" aria-label="打开对话菜单" onClick={() => setMobileMenu((value) => !value)}><MoreIcon /></button>
         {mobileMenu && <div className="chat-mobile-menu"><button type="button" onClick={() => { setDrawer("sources"); setMobileMenu(false); }}>查看引用</button><button type="button" onClick={() => { setDrawer("memory"); setMobileMenu(false); }}>查看记忆</button><Link href="/notes">心语札记</Link></div>}
       </header>
@@ -145,11 +168,11 @@ export default function ChatClient({ conversationId }: { conversationId: string 
         <CharacterArt slug={conversation.persona.slug} name={conversation.persona.name_zh} variant="avatar" />
         <p className="eyebrow"><span /> 当前对话者</p><h1>{name}</h1><p className="chat-persona-intro">{conversation.persona.short_intro}</p>
         <div className="chat-stage-list"><small>对话进程</small><ol>{dialogueStages.map((stage, index) => <li className={index === currentStageIndex ? "active" : index < currentStageIndex ? "done" : ""} key={stage.key}><span>{index < currentStageIndex ? "✓" : index + 1}</span><div><b>{stage.label}</b><small>{stage.note}</small></div></li>)}</ol></div>
-        <p className="persona-boundary">基于公开资料构建的 AI 思想人格<br />非真人本人 · 不是心理治疗工具</p>
+        <p className="persona-boundary">思想对话基于公开资料与作品构建<br />重要判断请回到原始资料</p>
       </aside>
 
       <section className="chat-center">
-        <div className={conversation.persona.is_living ? "chat-disclaimer living" : "chat-disclaimer"}>{conversation.persona.is_living ? "在世公众人物提示 · 非本人 · 非授权 · 非真实观点 · 非投资/医疗建议" : "基于公开资料构建的 AI 思想人格 · 并非真人本人"}</div>
+        {conversation.persona.is_living && <div className="chat-disclaimer living">在世人物思想对话 · 基于公开资料 · 非本人授权或实时观点</div>}
         <div className="chat-mobile-progress"><span style={{ width: `${((currentStageIndex + 1) / dialogueStages.length) * 100}%` }} /><b>{stageLabel(conversation.stage)}</b><small>{currentStageIndex + 1}/{dialogueStages.length}</small></div>
         <div className="message-list-redesign" aria-live="polite" aria-busy={streaming}>
           <div className="conversation-date"><span>这段对话</span></div>
@@ -158,8 +181,8 @@ export default function ChatClient({ conversationId }: { conversationId: string 
               <div className="message-avatar">{message.role === "assistant" ? <CharacterArt slug={conversation.persona.slug} name={conversation.persona.name_zh} variant="avatar" /> : <span>你</span>}</div>
               <div className="message-content">
                 <header><strong>{message.role === "assistant" ? name : "你"}</strong>{message.stage && <span>{stageLabel(message.stage)}</span>}</header>
-                <div className="message-paper">{message.content ? <RichMessage content={message.content} /> : <span className="thinking"><i /><i /><i /> 正在思量你的话…</span>}{message.localStatus === "stopped" && <small className="message-status">本轮已停止</small>}{message.degraded && <small className="degraded-note">本轮真实生成未完整返回，已使用人物风格保底回复</small>}</div>
-                {message.citations?.length > 0 && <button className="message-citation-button" type="button" onClick={() => setDrawer("sources")}><BookIcon size={15} /> 本段参考 {message.citations.length} 条公开资料 <ArrowRightIcon size={14} /></button>}
+                <div className="message-paper">{message.content ? <RichMessage content={message.content} /> : <span className="thinking"><i /><i /><i /> {streamNotice}</span>}{message.localStatus === "streaming" && message.content && <small className="message-status">{streamNotice}</small>}{message.localStatus === "stopped" && <small className="message-status">本轮已停止</small>}{message.degraded && <small className="degraded-note">本轮真实生成未完整返回，已使用人物风格保底回复</small>}</div>
+                {message.citations?.length > 0 && <button className={`message-citation-button ${message.citations.some((citation) => citation.label.startsWith("联网公开资料")) ? "web-updated" : ""}`} type="button" onClick={() => setDrawer("sources")}><BookIcon size={15} /> {citationSummary(message.citations)} <ArrowRightIcon size={14} /></button>}
               </div>
             </article>
           ))}
@@ -167,28 +190,29 @@ export default function ChatClient({ conversationId }: { conversationId: string 
         </div>
 
         <div className="chat-action-zone">
-          {candidates.map((memory) => <div className="memory-prompt" key={memory.id} data-testid="memory-candidate"><MemoryIcon /><div><small>要让我下次记得吗？</small><p>{memory.content}</p></div><div><button type="button" disabled={streaming || savingMemoryId === memory.id} onClick={() => decideMemory(memory, "remember")}>{savingMemoryId === memory.id ? "保存中…" : "记住"}</button><button type="button" disabled={streaming || savingMemoryId === memory.id} onClick={() => decideMemory(memory, "session_only")}>仅本次</button><button type="button" disabled={streaming || savingMemoryId === memory.id} onClick={() => decideMemory(memory, "discard")}>不保存</button></div></div>)}
+          {candidates.map((memory) => <div className="memory-prompt" key={memory.id} data-testid="memory-candidate"><MemoryIcon /><div><small>这件事可能会影响以后的对话，要让我记住吗？</small><p>{memory.content}</p></div><div><button type="button" disabled={streaming || savingMemoryId === memory.id} onClick={() => decideMemory(memory, "remember")}>{savingMemoryId === memory.id ? "保存中…" : "记住"}</button><button type="button" disabled={streaming || savingMemoryId === memory.id} onClick={() => decideMemory(memory, "session_only")}>仅本次</button><button type="button" disabled={streaming || savingMemoryId === memory.id} onClick={() => decideMemory(memory, "discard")}>不保存</button></div></div>)}
           {conversation.stage === "SAFETY" && <div className="safety-recovery" data-testid="safety-recovery-panel" role="status"><div><strong>安全支持已开启，但输入不会被锁定</strong><p>人物角色已暂停。你可以继续自由输入，或告诉我你当前的安全状况。</p></div><div><button type="button" onClick={() => send("我现在安全")} disabled={streaming}>我现在安全</button><button type="button" className="urgent" onClick={() => send("我有立即行动的打算")} disabled={streaming}>我需要紧急帮助</button></div></div>}
           {degraded && <div className="degraded-banner">本轮真实生成未完整返回，已使用人物风格保底回复。</div>}
+          {streaming && turnTrace && <div className="turn-trace" role="status"><span className={turnTrace.webAttempted ? "active" : ""}>{turnTrace.web ? "联网事实" : turnTrace.webAttempted ? "联网已核验" : "联网事实"}</span><i /><span className={turnTrace.deliberation ? "active" : ""}>人格推演</span><i /><span className="active">边界复核</span></div>}
           {error && <div className="status-banner status-error" role="alert">{error}{failed && <button type="button" onClick={() => send(failed.content, { key: failed.key })}>安全重试</button>}</div>}
           <QuickReplies replies={quickReplies} onChoose={chooseQuickReply} />
           <form className="composer-redesign" onSubmit={handleSubmit}>
             <label htmlFor="message-input" className="sr-only">{conversation.stage === "SAFETY" ? "安全支持中，你仍可以自由输入" : "你也可以自由输入"}</label>
             <textarea ref={textareaRef} id="message-input" value={input} onChange={(event) => setInput(event.target.value)} placeholder={conversation.stage === "SAFETY" ? "你可以回复‘我现在安全’，或继续告诉我此刻的状况…" : "不必组织得很完整，从眼下最难说清的那一点开始…"} rows={2} maxLength={4000} onKeyDown={(event) => { if (shouldSendOnEnter({ key: event.key, shiftKey: event.shiftKey, isComposing: event.nativeEvent.isComposing, keyCode: event.keyCode })) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }} />
-            <div className="composer-actions"><span>{input.length > 3600 ? `${input.length}/4000` : "Enter 发送 · Shift + Enter 换行"}</span>{streaming ? <button type="button" className="stop-button" onClick={() => abortRef.current?.abort()}><StopIcon size={16} /> 停止</button> : <button type="submit" disabled={!input.trim()} aria-label="发送消息"><SendIcon /></button>}</div>
+            <div className="composer-actions"><span>{input.length > 3600 ? `${input.length}/4000` : "Enter 发送 · Shift + Enter 换行"}</span>{streaming ? <button type="button" className="stop-button" onClick={() => abortRef.current?.abort("user")}><StopIcon size={16} /> 停止</button> : <button type="submit" disabled={!input.trim()} aria-label="发送消息"><SendIcon /></button>}</div>
           </form>
-          <p className="composer-notice">AI 可能会犯错。重要判断请结合原始资料与现实处境。</p>
+          <p className="composer-notice">重要判断请结合原始资料与现实处境。</p>
         </div>
       </section>
 
       <aside className="chat-right">
         <section><header><div><small>本轮线索</small><h2>正在谈什么</h2></div><QuoteIcon /></header><textarea aria-label="记录本轮线索" value={note} onChange={(event) => setNote(event.target.value)} placeholder="尚未形成清晰线索…" rows={4} /><small>仅保存在当前页面，Phase 4 将写入札记。</small></section>
-        <section><header><div><small>公开资料</small><h2>本轮引用</h2></div><button type="button" onClick={() => setDrawer("sources")} aria-label="打开全部引用"><ArrowRightIcon /></button></header>{allCitations.length ? <ul className="context-list">{allCitations.slice(0, 3).map((citation) => <li key={`${citation.document_id}-${citation.label}`}><BookIcon /><span>{citation.label}</span></li>)}</ul> : <p className="context-empty">对话引用会在这里出现。你可以随时查看它们来自哪里。</p>}</section>
+        <section><header><div><small>知识依据</small><h2>本轮引用</h2></div><button type="button" onClick={() => setDrawer("sources")} aria-label="打开全部引用"><ArrowRightIcon /></button></header>{allCitations.length ? <ul className="context-list">{allCitations.slice(0, 3).map((citation) => <li key={`${citation.document_id}-${citation.label}`} className={citation.label.startsWith("联网公开资料") ? "web-source" : ""}><BookIcon /><span>{citation.label}</span></li>)}</ul> : <p className="context-empty">私有资料或联网公开来源会在这里出现，你可以随时核对。</p>}</section>
         <section><header><div><small>经你确认</small><h2>记忆上下文</h2></div><button type="button" onClick={() => setDrawer("memory")} aria-label="打开全部记忆"><ArrowRightIcon /></button></header>{conversation.confirmed_memories.length ? <ul className="context-list" data-testid="remembered-context">{conversation.confirmed_memories.slice(0, 3).map((memory) => <li key={memory.id}><MemoryIcon /><span>{memory.content}</span></li>)}</ul> : <p className="context-empty">只有你明确确认后，内容才会进入长期记忆。</p>}</section>
         <Link className="end-conversation" href={`/notes?conversation=${conversation.id}`}>结束并生成心语札记 <ArrowRightIcon /></Link>
       </aside>
 
-      <Drawer open={drawer === "sources"} onClose={() => setDrawer(null)} eyebrow="知识依据" title="本轮公开资料">
+      <Drawer open={drawer === "sources"} onClose={() => setDrawer(null)} eyebrow="事实与人格分层" title="本轮知识依据">
         {allCitations.length ? <ol className="drawer-source-list">{allCitations.map((citation: Citation, index) => <li key={`${citation.document_id}-${index}`}><span>{String(index + 1).padStart(2, "0")}</span><div><strong>{citation.label}</strong>{citation.source_url && <a href={citation.source_url} target="_blank" rel="noreferrer">查看原始来源 <ExternalIcon size={14} /></a>}</div></li>)}</ol> : <div className="drawer-empty"><BookIcon size={30} /><p>这段对话还没有返回可展示的引用。人物资料页仍可查看基础资料来源。</p><Link href={`/figures/${conversation.persona.slug}`}>查看人物资料 <ArrowRightIcon /></Link></div>}
       </Drawer>
       <Drawer open={drawer === "memory"} onClose={() => setDrawer(null)} eyebrow="你拥有控制权" title="这位人物记得什么">

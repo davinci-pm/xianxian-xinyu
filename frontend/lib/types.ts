@@ -90,14 +90,16 @@ export interface ConversationCreateResponse {
 }
 
 export interface StreamEvent {
-  event: "meta" | "retry" | "chunk" | "degraded" | "done" | "error";
+  event: "meta" | "heartbeat" | "retry" | "chunk" | "degraded" | "done" | "error";
   data: Record<string, unknown>;
 }
 
 export interface SessionInfo {
   authenticated: boolean;
+  auth_required: boolean;
   locale: string;
   long_memory_available: boolean;
+  display_name: string | null;
 }
 
 export interface SkillInfo {
@@ -110,4 +112,144 @@ export interface SkillInfo {
   permissions: string[];
   allowlisted: boolean;
   enabled: boolean;
+}
+
+export type PersonaTargetType =
+  | "self"
+  | "authorized_private"
+  | "public_figure"
+  | "deceased"
+  | "composite"
+  | "fictional";
+
+export interface StudioSource {
+  id: string;
+  filename: string;
+  source_type: string;
+  mime_type: string;
+  char_count: number;
+  target_speaker: string | null;
+  time_range: string | null;
+  source_url: string | null;
+  published_at: string | null;
+  rights_confirmed: boolean;
+  status: string;
+  created_at: string;
+}
+
+export interface StudioClaim {
+  id: string;
+  claim_type: string;
+  content: string;
+  confidence: number;
+  review_status: string;
+  evidence_count: number;
+}
+
+export interface StudioProject {
+  id: string;
+  name: string;
+  target_type: PersonaTargetType;
+  relationship: string;
+  purpose: string;
+  language: string;
+  visibility: string;
+  status: string;
+  source_char_count: number;
+  quality_score: number;
+  persona_slug: string | null;
+  sources: StudioSource[];
+  claims: StudioClaim[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface StudioDistillationResult {
+  project: StudioProject;
+  persona: PersonaCard;
+  version: string;
+  job_id: string;
+  quality_score: number;
+  pipeline: StudioPipelineReport;
+}
+
+export interface StudioPipelineStage {
+  key: string;
+  label: string;
+  status: string;
+  count: number;
+  detail: string;
+}
+
+export interface StudioPipelineReport {
+  pipeline_version: string;
+  stages: StudioPipelineStage[];
+  evaluation: {
+    score: number;
+    dimensions: Record<string, number>;
+    case_count: number;
+  };
+  artifact_counts: Record<string, number>;
+}
+
+export interface StudioPipelineStatus {
+  pipeline_version: string;
+  job_id: string | null;
+  status: string;
+  progress: number;
+  stages: StudioPipelineStage[];
+  evaluation_score: number | null;
+  evaluation_dimensions: Record<string, number>;
+  artifact_counts: Record<string, number>;
+  pending_feedback: number;
+}
+
+export interface StudioFeedback {
+  id: string;
+  feedback_type: "fact_error" | "unlike" | "missing_context" | "better_response";
+  content: string;
+  target_artifact_id: string | null;
+  status: string;
+  review_note: string | null;
+  created_at: string;
+}
+
+export interface StudioHealthDimension {
+  key: string;
+  label: string;
+  score: number;
+  status: "strong" | "usable" | "gap";
+  detail: string;
+}
+
+export interface StudioHealthReport {
+  readiness_level: "轮廓版" | "可用版" | "推荐版" | "高保真版";
+  overall_score: number;
+  effective_chars: number;
+  substantive_utterances: number;
+  decision_signals: number;
+  domains_covered: string[];
+  source_types: string[];
+  adaptive_tier: "outline" | "structured" | "deep" | "trainable";
+  enabled_capabilities: string[];
+  fidelity_validated: boolean;
+  metric_scope: string;
+  data_profile: {
+    chat_target_turns: number;
+    chat_sessions: number;
+    contextual_target_turns: number;
+    temporal_span_days: number;
+    holdout_ready: boolean;
+  };
+  dimensions: StudioHealthDimension[];
+  gaps: string[];
+  recommended_questions: string[];
+  can_distill: boolean;
+}
+
+export interface OwnedPersona extends PersonaCard {
+  version: string;
+  quality_score: number;
+  visibility: string;
+  project_id: string | null;
 }

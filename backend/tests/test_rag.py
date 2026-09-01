@@ -66,6 +66,101 @@ def test_hybrid_retrieval_uses_bm25_and_local_vectors() -> None:
         db.commit()
 
 
+def test_single_consolidated_document_can_fill_the_evidence_budget() -> None:
+    with SessionLocal() as db:
+        persona = Persona(
+            slug="single-upload-retrieval-test",
+            name_zh="单文件检索测试",
+            name_en="Single upload test",
+            era="当代",
+            region="测试",
+            short_intro="测试单个合并资料包的检索召回。",
+        )
+        db.add(persona)
+        db.flush()
+        document = KnowledgeDocument(
+            persona_id=persona.id,
+            title="合并资料包",
+            source_type="interview",
+            citation_label="合并资料包",
+            license_note="test-only",
+            content="创业动机与产品选择。",
+            metadata_json="{}",
+        )
+        db.add(document)
+        db.flush()
+        for index in range(4):
+            db.add(
+                KnowledgeChunk(
+                    document_id=document.id,
+                    persona_id=persona.id,
+                    chunk_index=index,
+                    heading=f"动机记录 {index + 1}",
+                    content=f"这是第 {index + 1} 段关于创业动机和产品选择的直接资料。",
+                    content_hash=f"single-upload-{index}",
+                    citation_label=document.citation_label,
+                    metadata_json="{}",
+                )
+            )
+        db.commit()
+
+        hits = retrieve_knowledge(db, persona.id, "创业动机和产品选择", limit=4)
+
+        assert len(hits) == 4
+
+        db.delete(document)
+        db.delete(persona)
+        db.commit()
+
+
+def test_retrieval_filters_explicitly_mismatched_time_ranges() -> None:
+    with SessionLocal() as db:
+        persona = Persona(
+            slug="temporal-retrieval-test",
+            name_zh="时间检索测试",
+            name_en="Temporal retrieval test",
+            era="当代",
+            region="测试",
+            short_intro="测试检索时间过滤。",
+        )
+        db.add(persona)
+        db.flush()
+        document = KnowledgeDocument(
+            persona_id=persona.id,
+            title="跨年资料",
+            source_type="interview",
+            citation_label="跨年资料",
+            license_note="test-only",
+            content="产品判断在不同年份发生了变化。",
+            metadata_json="{}",
+        )
+        db.add(document)
+        db.flush()
+        for index, year in enumerate(("2020", "2025")):
+            db.add(
+                KnowledgeChunk(
+                    document_id=document.id,
+                    persona_id=persona.id,
+                    chunk_index=index,
+                    heading=f"{year}年访谈",
+                    content=f"{year}年的产品选择是先验证用户需求。",
+                    content_hash=f"temporal-{year}",
+                    citation_label=document.citation_label,
+                    metadata_json=f'{{"time_range":"{year}"}}',
+                )
+            )
+        db.commit()
+
+        hits = retrieve_knowledge(db, persona.id, "2020年的产品选择", limit=4)
+
+        assert hits
+        assert all("2025" not in hit.content for hit in hits)
+
+        db.delete(document)
+        db.delete(persona)
+        db.commit()
+
+
 def test_fengge_corpus_import_is_complete_and_repeatable() -> None:
     with SessionLocal() as db:
         first = ingest_fengge_corpus(db)

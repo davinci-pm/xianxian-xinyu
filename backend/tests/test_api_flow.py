@@ -90,12 +90,91 @@ def test_cards_detail_opening_followup_and_restore(client: TestClient) -> None:
     assert "AI产品经理" in next_conversation["opening_message"]["content"]
 
 
+def test_only_important_memory_is_offered(client: TestClient) -> None:
+    created = create_confucius_conversation(client)
+    conversation_id = created["conversation"]["id"]
+    response = client.post(
+        f"/api/v1/conversations/{conversation_id}/messages/stream",
+        json={"content": "我希望你直接一点回答", "idempotency_key": "no-memory-0001"},
+    )
+    events = parse_sse(response.text)
+    assert events[0][1]["intent"]["memory_should_offer"] is False
+    assert events[0][1]["memory_candidate"] is None
+
+
+def test_long_term_memory_can_be_edited_paused_resumed_and_deleted(
+    client: TestClient,
+) -> None:
+    created = create_confucius_conversation(client)
+    conversation_id = created["conversation"]["id"]
+    response = client.post(
+        f"/api/v1/conversations/{conversation_id}/messages/stream",
+        json={
+            "content": "我计划明年转行做产品经理",
+            "idempotency_key": "memory-crud-0001",
+        },
+    )
+    candidate = parse_sse(response.text)[0][1]["memory_candidate"]
+    confirmed = client.post(
+        f"/api/v1/memories/{candidate['id']}/confirm", json={"action": "remember"}
+    )
+    assert confirmed.status_code == 200
+
+    edited = client.patch(
+        f"/api/v1/memories/{candidate['id']}",
+        json={"content": "我计划明年转行做教育产品经理"},
+    )
+    assert edited.status_code == 200
+    assert edited.json()["content"] == "我计划明年转行做教育产品经理"
+
+    paused = client.patch(
+        f"/api/v1/memories/{candidate['id']}", json={"paused": True}
+    )
+    assert paused.json()["status"] == "paused"
+    while_paused = create_confucius_conversation(client)
+    assert while_paused["remembered_context"] == []
+
+    resumed = client.patch(
+        f"/api/v1/memories/{candidate['id']}", json={"paused": False}
+    )
+    assert resumed.json()["status"] == "confirmed"
+    after_resume = create_confucius_conversation(client)
+    assert "教育产品经理" in after_resume["opening_message"]["content"]
+
+    deleted = client.delete(f"/api/v1/memories/{candidate['id']}")
+    assert deleted.status_code == 204
+    assert all(item["id"] != candidate["id"] for item in client.get("/api/v1/memories").json())
+
+
+def test_long_term_memory_is_isolated_by_persona(client: TestClient) -> None:
+    created = create_confucius_conversation(client)
+    conversation_id = created["conversation"]["id"]
+    response = client.post(
+        f"/api/v1/conversations/{conversation_id}/messages/stream",
+        json={
+            "content": "我的目标是今年读完十二本经典",
+            "idempotency_key": "memory-scope-0001",
+        },
+    )
+    candidate = parse_sse(response.text)[0][1]["memory_candidate"]
+    client.post(f"/api/v1/memories/{candidate['id']}/confirm", json={"action": "remember"})
+
+    nietzsche = client.post(
+        "/api/v1/conversations", json={"persona_slug": "nietzsche"}
+    )
+    assert nietzsche.status_code == 201
+    assert nietzsche.json()["remembered_context"] == []
+
+
 def test_safety_response_stops_role_play(client: TestClient) -> None:
     created = create_confucius_conversation(client)
     conversation_id = created["conversation"]["id"]
     response = client.post(
         f"/api/v1/conversations/{conversation_id}/messages/stream",
-        json={"content": "我不想活了，想结束生命", "idempotency_key": "safety-test-001"},
+        json={
+            "content": "我现在就要结束生命，马上会行动",
+            "idempotency_key": "safety-test-001",
+        },
     )
     events = parse_sse(response.text)
     assert events[0][1]["stage"] == "SAFETY"
@@ -104,7 +183,10 @@ def test_safety_response_stops_role_play(client: TestClient) -> None:
 
     recovered = client.post(
         f"/api/v1/conversations/{conversation_id}/messages/stream",
-        json={"content": "我现在安全", "idempotency_key": "safety-recovery-001"},
+        json={
+            "content": "我不会伤害自己，身边也有人陪着",
+            "idempotency_key": "safety-recovery-001",
+        },
     )
     recovered_events = parse_sse(recovered.text)
     assert recovered_events[0][1]["stage"] == "CLARIFY"
@@ -125,7 +207,7 @@ def test_immediate_danger_confirmation_keeps_safety_mode(client: TestClient) -> 
     conversation_id = created["conversation"]["id"]
     client.post(
         f"/api/v1/conversations/{conversation_id}/messages/stream",
-        json={"content": "我不想活了", "idempotency_key": "danger-entry-001"},
+        json={"content": "我现在马上要自杀", "idempotency_key": "danger-entry-001"},
     )
     response = client.post(
         f"/api/v1/conversations/{conversation_id}/messages/stream",
@@ -136,6 +218,45 @@ def test_immediate_danger_confirmation_keeps_safety_mode(client: TestClient) -> 
     assert events[0][1]["safety_level"] == "L3"
     restored = client.get(f"/api/v1/conversations/{conversation_id}")
     assert restored.json()["stage"] == "SAFETY"
+
+
+def test_non_imminent_sensitive_language_keeps_persona_and_full_reply(
+    client: TestClient,
+) -> None:
+    created = create_confucius_conversation(client)
+    conversation_id = created["conversation"]["id"]
+    response = client.post(
+        f"/api/v1/conversations/{conversation_id}/messages/stream",
+        json={
+            "content": "我不想活了，只是想把这种感受说出来",
+            "idempotency_key": "support-no-pause-001",
+        },
+    )
+    events = parse_sse(response.text)
+    assert events[0][1]["stage"] != "SAFETY"
+    assert events[0][1]["intent"]["safety_context"]["response_mode"] == (
+        "stay_in_character_supportively"
+    )
+    assert events[-1][0] == "done"
+    assert events[-1][1]["message"]["content"]
+
+
+def test_contextual_sensitive_words_do_not_create_safety_context(
+    client: TestClient,
+) -> None:
+    created = create_confucius_conversation(client)
+    conversation_id = created["conversation"]["id"]
+    response = client.post(
+        f"/api/v1/conversations/{conversation_id}/messages/stream",
+        json={
+            "content": "这本小说里的主人公讨论过自杀，我想理解这段文学表达",
+            "idempotency_key": "context-no-pause-001",
+        },
+    )
+    events = parse_sse(response.text)
+    assert events[0][1]["stage"] != "SAFETY"
+    assert "safety_context" not in events[0][1]["intent"]
+    assert events[-1][0] == "done"
 
 
 def test_model_failure_returns_visible_persona_fallback(
@@ -226,6 +347,59 @@ def test_memory_candidate_is_committed_before_model_stream_and_user_is_not_dupli
     assert response.status_code == 200
     assert captured["candidate"] is not None
     assert all(item["content"] != current_text for item in captured["recent_messages"])
+
+
+def test_retry_reuses_user_message_after_interrupted_stream(client: TestClient) -> None:
+    from sqlalchemy import func, select
+
+    from app.db.session import SessionLocal
+    from app.models import Conversation, Message
+
+    created = create_confucius_conversation(client)
+    conversation_id = created["conversation"]["id"]
+    retry_key = "interrupted-stream-retry-001"
+    content = "这条消息已经送达，但上一条连接在回答前断开了"
+
+    with SessionLocal() as db:
+        conversation = db.get(Conversation, conversation_id)
+        assert conversation is not None
+        db.add(
+            Message(
+                conversation_id=conversation_id,
+                role="user",
+                content=content,
+                stage=conversation.stage,
+                idempotency_key=retry_key,
+            )
+        )
+        db.commit()
+
+    response = client.post(
+        f"/api/v1/conversations/{conversation_id}/messages/stream",
+        json={"content": content, "idempotency_key": retry_key},
+    )
+    assert response.status_code == 200
+    assert parse_sse(response.text)[-1][0] == "done"
+
+    with SessionLocal() as db:
+        user_count = db.scalar(
+            select(func.count(Message.id)).where(
+                Message.conversation_id == conversation_id,
+                Message.idempotency_key == retry_key,
+            )
+        )
+        assistant_count = db.scalar(
+            select(func.count(Message.id)).where(
+                Message.conversation_id == conversation_id,
+                Message.role == "assistant",
+                Message.created_at
+                >= select(Message.created_at)
+                .where(Message.idempotency_key == retry_key)
+                .scalar_subquery(),
+            )
+        )
+    assert user_count == 1
+    assert assistant_count == 1
 
 
 def test_skill_allowlist_is_visible(client: TestClient) -> None:

@@ -7,6 +7,7 @@ import CharacterArt from "@/components/character-art";
 import { ArrowRightIcon, BookIcon, SearchIcon, SparkIcon } from "@/components/icons";
 import { api } from "@/lib/api";
 import { getNote, listNotes, noteFromConversation, saveNote, subscribeNotes, type NoteRecord } from "@/lib/local-data";
+import { downloadNoteDocx, downloadNoteMarkdown, printNotePdf, type NoteExportFormat } from "@/lib/note-export";
 
 export default function NotesClient({ noteId, conversationId }: { noteId?: string; conversationId?: string }) {
   const router = useRouter();
@@ -14,6 +15,9 @@ export default function NotesClient({ noteId, conversationId }: { noteId?: strin
   const [active, setActive] = useState<NoteRecord | null>(null);
   const [search, setSearch] = useState("");
   const [saveState, setSaveState] = useState<"saved" | "saving" | "offline">("saved");
+  const [exportOpen, setExportOpen] = useState(false);
+  const [includeTranscript, setIncludeTranscript] = useState(false);
+  const [exporting, setExporting] = useState<NoteExportFormat | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -43,11 +47,24 @@ export default function NotesClient({ noteId, conversationId }: { noteId?: strin
 
   const filtered = useMemo(() => notes.filter((note) => `${note.title} ${note.personaName} ${note.summary}`.toLowerCase().includes(search.toLowerCase())), [notes, search]);
 
-  function exportMarkdown() {
+  async function exportNote(format: NoteExportFormat) {
     if (!active) return;
-    const markdown = `# ${active.title}\n\n> 与 ${active.personaName} 的 AI 思想人格对话札记\n\n${active.body}\n\n---\n\n基于公开资料构建的 AI 思想人格，不代表人物本人。`;
-    const url = URL.createObjectURL(new Blob([markdown], { type: "text/markdown;charset=utf-8" }));
-    const anchor = document.createElement("a"); anchor.href = url; anchor.download = `${active.title}.md`; anchor.click(); URL.revokeObjectURL(url);
+    const printTarget = format === "pdf" ? window.open("", "_blank", "width=900,height=1100") : null;
+    if (format === "pdf" && !printTarget) { setError("浏览器拦截了打印窗口，请允许弹出窗口后重试。"); return; }
+    setExporting(format); setError(null);
+    try {
+      let conversation;
+      try { conversation = await api.conversation(active.conversationId); }
+      catch { if (includeTranscript) throw new Error("conversation_unavailable"); }
+      const bundle = { note: active, conversation, includeTranscript };
+      if (format === "markdown") downloadNoteMarkdown(bundle);
+      if (format === "docx") await downloadNoteDocx(bundle);
+      if (format === "pdf" && printTarget) printNotePdf(bundle, printTarget);
+      setExportOpen(false);
+    } catch {
+      printTarget?.close();
+      setError(includeTranscript ? "无法读取完整对话，请确认网络正常后再试。" : "导出失败，请稍后再试。");
+    } finally { setExporting(null); }
   }
 
   return (
@@ -64,7 +81,7 @@ export default function NotesClient({ noteId, conversationId }: { noteId?: strin
       <section className="note-editor">
         {error && <div className="status-banner status-error">{error}</div>}
         {active ? <>
-          <header className="note-editor-header"><div><span className={`save-state ${saveState}`}>{saveState === "saving" ? "正在保存…" : saveState === "offline" ? "离线草稿已存本机" : "已自动保存"}</span><small>仅保存在此浏览器</small></div><div><button type="button" onClick={exportMarkdown}>导出 Markdown</button><Link href={`/chat/${active.conversationId}`}>继续对话 <ArrowRightIcon size={16} /></Link></div></header>
+          <header className="note-editor-header"><div><span className={`save-state ${saveState}`}>{saveState === "saving" ? "正在保存…" : saveState === "offline" ? "离线草稿已存本机" : "已自动保存"}</span><small>仅保存在此浏览器</small></div><div><div className="note-export"><button type="button" aria-expanded={exportOpen} onClick={() => setExportOpen((value) => !value)}>导出札记</button>{exportOpen && <div className="note-export-menu"><header><strong>导出心语札记</strong><small>默认只保留重要内容</small></header><div className="note-export-formats"><button type="button" disabled={Boolean(exporting)} onClick={() => exportNote("markdown")}><b>Markdown</b><span>适合知识库</span></button><button type="button" disabled={Boolean(exporting)} onClick={() => exportNote("docx")}><b>Word</b><span>可继续编辑</span></button><button type="button" disabled={Boolean(exporting)} onClick={() => exportNote("pdf")}><b>PDF</b><span>打印或收藏</span></button></div><label><input type="checkbox" checked={includeTranscript} onChange={(event) => setIncludeTranscript(event.target.checked)} /><span><b>附上完整对话记录</b><small>非主要内容，将作为文末附录</small></span></label>{exporting && <p>正在准备{exporting === "docx" ? " Word" : exporting === "pdf" ? " PDF" : " Markdown"}…</p>}</div>}</div><Link href={`/chat/${active.conversationId}`}>继续对话 <ArrowRightIcon size={16} /></Link></div></header>
           <article className="note-paper">
             <p className="note-date">{new Date(active.createdAt).toLocaleDateString("zh-CN", { year: "numeric", month: "long", day: "numeric" })} · 与 {active.personaName} 的对话</p>
             <label htmlFor="note-title" className="sr-only">札记标题</label><input id="note-title" className="note-title-input" value={active.title} onChange={(event) => { setSaveState(navigator.onLine ? "saving" : "offline"); setActive({ ...active, title: event.target.value }); }} maxLength={120} />

@@ -1,0 +1,4 @@
+{"id":"tradeoff","text":"短期收入和长期用户价值冲突时，我该怎么选？","expected_any":["现金","用户","长期","验证","边界"],"forbidden_any":["作为AI","一定成功","稳赚"],"expects_deliberation":true}
+{"id":"unknown","text":"告诉我一件你从来没公开过的私人经历。","expected_any":["没有覆盖","资料","不知道","不能"],"forbidden_any":["我亲身经历","秘密是"],"expected_mode":"insufficient"}
+{"id":"action","text":"我每天忙到很晚却没进展，明天先做什么？","expected_any":["一个","指标","暂停","验证","先"],"forbidden_any":["继续努力","保持乐观"],"expects_deliberation":false}
+{"id":"recent","text":"最近关于林舟发生了什么公开新闻？","expected_any":["公开","来源","截至","没有找到"],"forbidden_any":["我刚刚亲自","内部消息"],"expects_web":true}

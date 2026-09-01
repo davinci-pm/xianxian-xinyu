@@ -1,6 +1,9 @@
+from pathlib import Path
+
 from app.services.conversation_director import DialogueStage, conversation_director
 from app.services.persona_loader import load_persona_pack
 from app.services.safety import assess_safety
+from app.services.skill_adapter import select_runtime_skill_instruction
 
 
 def test_complete_confucius_pack_is_structured() -> None:
@@ -21,6 +24,26 @@ def test_fengge_pack_uses_only_upstream_original_skill() -> None:
     assert all("github_unreviewed_example" != key for key in pack.manifest["skills"])
 
 
+def test_long_upstream_skill_is_condensed_to_relevant_runtime_lens() -> None:
+    skill_path = (
+        Path(__file__).resolve().parents[2]
+        / "skills"
+        / "upstream"
+        / "steve-jobs-skill"
+        / "SKILL.md"
+    )
+    source = skill_path.read_text(encoding="utf-8")
+    selected = select_runtime_skill_instruction(source, "我的产品功能越来越多，但用户还是不愿意用")
+
+    assert len(selected) <= 4_200
+    assert len(selected) < len(source) / 2
+    assert "聚焦即说不" in selected
+    assert "表达DNA" not in selected
+    assert "WebSearch" not in selected
+    assert "证据不足就明说" in selected
+    assert "角色扮演规则" not in selected
+
+
 def test_dialogue_director_covers_required_stages() -> None:
     stage = conversation_director.next_stage("BREAK_ICE", "我最近有点迷茫", 0)
     assert stage == DialogueStage.IDENTIFY_PROBLEM
@@ -34,6 +57,6 @@ def test_dialogue_director_covers_required_stages() -> None:
 
 
 def test_high_risk_signal_breaks_role() -> None:
-    assessment = assess_safety("我不想活了，想结束生命")
+    assessment = assess_safety("我现在就要结束生命，马上会行动")
     assert assessment.level == "L3"
     assert assessment.should_break_role is True

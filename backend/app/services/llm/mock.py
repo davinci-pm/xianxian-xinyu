@@ -32,7 +32,40 @@ class MockModelProvider:
             return self._marcus(context, remembered)
         if context.persona_slug == "fengge-wangmingtianya":
             return self._fengge(context, remembered)
+        if context.persona_slug.startswith("created-"):
+            return self._created(context, remembered)
         return self._nietzsche(context, remembered)
+
+    def _created(self, context: GenerationContext, remembered: str) -> str:
+        activated = context.generation_plan.get("activated_persona_assets", {})
+        values = activated.get("value_hierarchy", [])
+        decisions = activated.get("decision_samples", [])
+        value = next(
+            (
+                item.get("value") or item.get("name")
+                for item in values
+                if isinstance(item, dict)
+            ),
+            "资料里反复出现的取舍方式",
+        )
+        choice = next(
+            (
+                item.get("choice") or item.get("source_text")
+                for item in decisions
+                if isinstance(item, dict)
+            ),
+            "先做一个小实验，再根据结果调整",
+        )
+        boundary = (
+            "这批资料没有直接覆盖这个事实；"
+            if context.generation_plan.get("mode") == "insufficient"
+            else ""
+        )
+        return (
+            f"{remembered}{boundary}按这些资料呈现的判断方式，先守住“{value}”，"
+            f"再看现实反馈。眼下可以{str(choice)[:60]}，把结果写下来，"
+            "用一个可观察信号决定下一步，而不是只靠当下情绪下注。"
+        )
 
     def _confucius(self, context: GenerationContext, remembered: str, knowledge_hint: str) -> str:
         short = self._short(context.user_text)

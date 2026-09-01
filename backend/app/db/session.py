@@ -5,6 +5,7 @@ from sqlalchemy import Engine, create_engine, event
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.core.config import get_settings
+from app.services.database_runtime import backup_database
 
 settings = get_settings()
 if settings.database_url.startswith("sqlite"):
@@ -31,6 +32,12 @@ def _configure_sqlite(dbapi_connection: object, _connection_record: object) -> N
 
 
 SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+
+
+@event.listens_for(SessionLocal, "after_commit")
+def _persist_ephemeral_sqlite_after_commit(_session: Session) -> None:
+    if settings.db_backup_after_commit:
+        backup_database()
 
 
 def get_db() -> Generator[Session, None, None]:
