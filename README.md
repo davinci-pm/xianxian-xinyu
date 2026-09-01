@@ -92,3 +92,8 @@ export LLM_MODEL='已开通的模型 ID'
 - 未审核 GitHub Skills 处于 `allowlisted=false`、`enabled=false`，不会执行。已纳入的 16 个外部人物 Skill（含峰哥）均固定提交并记录 MIT 许可证；Adapter 只把原版 `SKILL.md` 作为常驻人格指令，其余 Markdown 由本地混合 RAG 按需召回，避免整库塞入上下文。仓库附带脚本没有命令执行权限，也不会被 Skill Adapter 调用。
 - 自伤、自杀和极端痛苦信号会在模型调用前中断人物角色，进入确定性安全响应。
 - 本阶段不包含部署、付费、语音、数字人、社区或自定义人物。
+
+## 开源许可
+
+项目自有代码与文档采用 [MIT License](LICENSE) 开源。`skills/approved/` 与
+`skills/upstream/` 中的第三方人物 Skill 保留各自目录内的许可证和版权声明。
