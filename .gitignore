@@ -1,4 +1,6 @@
 .DS_Store
+bill_overview_*.pdf
+research/persona-packs/
 .env
 .env.*
 !.env.example
